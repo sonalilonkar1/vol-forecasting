@@ -1,0 +1,13 @@
+pandas
+numpy
+scipy
+scikit-learn
+statsmodels
+arch
+torch
+torchvision
+torchaudio
+pytorch-lightning
+matplotlib
+pyyaml
+tqdm
