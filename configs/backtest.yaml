@@ -1,0 +1,5 @@
+target_vol: 0.10
+cost_bps: 10
+no_trade_pp: 5
+weight_cap: 0.5
+rebalance: daily
