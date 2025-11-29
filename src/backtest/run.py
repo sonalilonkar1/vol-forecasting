@@ -62,6 +62,24 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override no-trade band width in percentage points.",
     )
+    parser.add_argument(
+        "--weight-cap",
+        type=float,
+        default=None,
+        help="Override absolute per-asset weight cap (default sourced from config).",
+    )
+    parser.add_argument(
+        "--returns-path",
+        type=Path,
+        default=None,
+        help="CSV with realized returns (default: configs/backtest.yaml or data/processed/returns.csv).",
+    )
+    parser.add_argument(
+        "--return-col",
+        type=str,
+        default=None,
+        help="Column name containing one-day returns (defaults to ret_1d, then ret).",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +106,33 @@ def load_predictions(path: Path) -> pd.DataFrame:
     return preds
 
 
+def load_returns(path: Path, preferred_col: str | None = None) -> tuple[pd.DataFrame, str]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Returns file not found: {path}. Generate one via 'python -m src.data.build_returns'"
+        )
+    returns = pd.read_csv(path, parse_dates=["date"])
+    if "asset" not in returns.columns and "ticker" in returns.columns:
+        returns = returns.rename(columns={"ticker": "asset"})
+
+    requested = preferred_col or "ret_1d"
+    candidates = [c for c in [requested, "ret", "ret_1d"] if c and c in returns.columns]
+    if not candidates:
+        raise ValueError(
+            f"Return column '{requested}' not found in {path}."
+            " Available columns: " + ", ".join(sorted(returns.columns))
+        )
+    actual_col = candidates[0]
+    if actual_col != requested:
+        print(f"Using return column '{actual_col}' instead of requested '{requested}'.")
+    required = {"date", "asset", actual_col}
+    missing = required - set(returns.columns)
+    if missing:
+        raise ValueError(f"Returns file missing columns: {', '.join(sorted(missing))}")
+    returns = returns[["date", "asset", actual_col]].copy()
+    return returns, actual_col
+
+
 def resolve_pred_path(args: argparse.Namespace) -> Path:
     if args.pred_path is not None:
         return args.pred_path
@@ -109,9 +154,22 @@ if __name__ == "__main__":
     target_vol = args.target_vol if args.target_vol is not None else cfg.get("target_vol", 0.10)
     cost_bps = args.cost_bps if args.cost_bps is not None else cfg.get("cost_bps", 10)
     no_trade_pp = args.no_trade_pp if args.no_trade_pp is not None else cfg.get("no_trade_pp", 5)
+    weight_cap = args.weight_cap if args.weight_cap is not None else cfg.get("weight_cap", 1.0)
+    default_returns = cfg.get("returns_path", "data/processed/returns.csv")
+    returns_path = args.returns_path if args.returns_path is not None else Path(default_returns)
+    return_col = args.return_col if args.return_col is not None else cfg.get("returns_col")
 
     preds = load_predictions(pred_path)
-    out = backtest(preds, target_vol=target_vol, cost_bps=cost_bps, no_trade_pp=no_trade_pp)
+    returns_df, actual_return_col = load_returns(returns_path, preferred_col=return_col)
+    out = backtest(
+        preds,
+        returns_df,
+        target_vol=target_vol,
+        cost_bps=cost_bps,
+        no_trade_pp=no_trade_pp,
+        return_col=actual_return_col,
+        weight_cap=weight_cap,
+    )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path = resolve_out_path(args, pred_path)

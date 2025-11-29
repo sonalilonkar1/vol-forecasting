@@ -3,3 +3,5 @@ cost_bps: 10
 no_trade_pp: 5
 weight_cap: 0.5
 rebalance: daily
+returns_path: data/processed/returns.csv
+returns_col: ret_1d
