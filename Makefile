@@ -1,6 +1,12 @@
-.PHONY: features har harx preds bt report all
+.PHONY: check
+
+check:
+	python -c "print('OK')"
 
 PY := python
+MODELS ?=
+H ?=
+BTPATTERN ?=
 
 features:
 	$(PY) -m src.features.build
@@ -15,11 +21,18 @@ harx:
 
 # Run backtests for any prediction CSVs (HAR/HARX/simple_rnn)
 bt:
-	$(PY) -m src.backtest.run_batch
+	$(PY) -m src.backtest.run_batch \
+		$(if $(MODELS),--models $(MODELS),) \
+		$(if $(H),--horizons $(H),) \
+		$(if $(BTPATTERN),--pattern $(BTPATTERN),)
 
 # Produce summary CSV of RMSE/QLIKE + final cum_net/turnover
 report:
 	$(PY) -m src.eval.report
+
+# PnL backtests
+pnl:
+	$(PY) -m src.backtest.run_batch_pnl
 
 # End-to-end
 all: features har bt report

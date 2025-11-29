@@ -28,6 +28,7 @@ python -m pip install -r requirements.txt
 - `experiments/results/` – backtest outputs.
 - `configs/splits.yaml` – time windows plus optional `assets` filter and `embargo_days`.
 - `configs/backtest.yaml` – portfolio knobs (`target_vol`, `cost_bps`, `no_trade_pp`, etc.).
+- `data/processed/returns.csv` – realized one-day returns (`date,asset,ret_1d`) feeding the P&L calculations. Build it directly from the TFT panel with `python -m src.data.build_returns` (see workflow below).
 
 ## HAR baseline (Phase B)
 
@@ -71,7 +72,8 @@ python -m src.backtest.run \
 	--pred-path experiments/preds/har_h5.csv \
 	--target-vol 0.12 \
 	--cost-bps 5 \
-	--no-trade-pp 3
+	--no-trade-pp 3 \
+	--returns-path data/processed/returns.csv
 ```
 
 Options:
@@ -81,17 +83,50 @@ Options:
 - `--out-dir` – write results to a custom folder (default `experiments/results`).
 - `--config` – reads defaults from `configs/backtest.yaml`.
 - `--target-vol`, `--cost-bps`, `--no-trade-pp` – CLI overrides.
+- `--returns-path` – realized return panel (`date,asset,ret_1d` or `ret`). Defaults to the config value then `data/processed/returns.csv`.
+- `--return-col` – custom column name when the file doesn’t use `ret_1d`.
+- `--weight-cap` – absolute per-asset cap applied after vol targeting (defaults to config value or 1.0).
 
 Runner behavior:
 
 - Renames `ticker → asset` if needed.
 - Filters predictions to the `test` split when a `split` column exists.
 - Validates the presence of `date`, `asset`, `yhat_rv`.
+- Loads realized returns, aligns them to the prediction dates, and emits `gross_ret`, `net_ret`, `cum_gross`, `cum_net` alongside cost/turnover diagnostics.
+- Applies costs on a one-day lag (weights chosen at the close of day *t* drive day *t+1* P&L), and reports the turnover/cost that actually hits that day’s net return.
 - Saves outputs as `{pred_stem}_bt.csv` inside `out-dir` (e.g., `experiments/results/har_h1_bt.csv`).
+
+### Batch mode (multiple models/horizons)
+
+Use the helper CLI to run backtests for many prediction files at once, optionally filtering by model prefix (`har`, `harx`, `simple_rnn`, …) and/or horizon list:
+
+```bash
+# All prediction CSVs under experiments/preds
+python -m src.backtest.run_batch
+
+# Only HAR files with H in {1,5}
+python -m src.backtest.run_batch --models har --horizons 1 5
+
+# Compare HAR vs HARX at 22 days (dry run to preview)
+python -m src.backtest.run_batch --models har harx --horizons 22 --dry-run
+
+# Custom glob/pred directory
+python -m src.backtest.run_batch --pred-dir other_preds --pattern "*_best.csv"
+```
+
+- `--models` – space-separated prefixes (case-insensitive). Default: all.
+- `--horizons` – limit to certain `_h{H}` suffixes (integers).
+- `--pattern` – glob applied inside `--pred-dir` before filtering (`*.csv` by default).
+- `--dry-run` – print which files match without executing backtests.
+
+`make bt` now respects environment overrides, e.g. `make bt MODELS="har harx" H="1 5"`.
 
 ## Typical workflow
 
 ```bash
+# 0. Materialize realized returns (once per dataset refresh)
+python -m src.data.build_returns --source data/tft_ready_dataset.csv
+
 # 1. Ensure data artifacts exist (TFT-ready CSVs or features.parquet)
 
 # 2. Fit HAR baselines
