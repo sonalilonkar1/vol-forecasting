@@ -214,3 +214,12 @@ data/raw/
 data/processed/
 checkpoints/
 experiments/
+
+#vscode settings
+.vscode/
+
+# personal notes
+notes.md
+
+# project proposal
+DeepLearningProjectProposal.pdf

@@ -4,6 +4,7 @@ scipy
 scikit-learn
 statsmodels
 arch
+pyarrow
 torch
 torchvision
 torchaudio
