@@ -19,6 +19,10 @@ har:
 harx:
 	$(PY) -m src.models.har_rv --horizons 1 5 22 --harx --target point
 
+# Simple MLP baseline (shares schema with HAR outputs)
+mlp:
+	$(PY) -m src.models.simple_mlp --horizons 1 5 22 --eval-splits val test
+
 # Run backtests for any prediction CSVs (HAR/HARX/simple_rnn)
 bt:
 	$(PY) -m src.backtest.run_batch \

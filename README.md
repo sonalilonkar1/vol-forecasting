@@ -3,7 +3,7 @@
 Predict future volatility, feed the signals into a cost-aware inverse-volatility allocator, and inspect the resulting portfolio diagnostics. The repo is organized around three building blocks:
 
 1. **Features** – leakage-safe HAR inputs derived from TFT-ready CSVs or the builder parquet.
-2. **Models** – currently a per-asset HAR-RV baseline with configurable horizons.
+2. **Models** – HAR/HARX regressions plus a simple neural-net baseline that all emit the same prediction schema.
 3. **Backtests** – inverse-vol targeting with transaction costs, no-trade bands, and vol caps.
 
 ## Environment setup
@@ -59,6 +59,28 @@ Each horizon writes `experiments/preds/har_h{H}.csv` that respects the standard 
 ```
 date,asset,y_true_logrv,y_true_rv,yhat_logrv,yhat_rv,model,horizon,split
 ```
+
+## Simple MLP baseline
+
+When you want a quick non-linear reference without leaving pandas/torch, the lightweight MLP leverages the same HAR feature table and produces identical CSVs (`mlp_h{H}.csv`).
+
+```bash
+python -m src.models.simple_mlp --horizons 1 5 22 --eval-splits val test \
+	--hidden-dim 64 --num-layers 2 --epochs 50
+
+# HARX-style exogenous inputs + GPU device
+python -m src.models.simple_mlp --harx --device cuda:0 --horizons 1 5 22
+```
+
+Key knobs:
+
+- `--hidden-dim`, `--num-layers`, `--dropout` – architecture choices.
+- `--epochs`, `--batch-size`, `--lr`, `--weight-decay` – training loop settings.
+- `--harx` – include lagged VIX/calendar features if present (mirrors HARX inputs).
+- `--min-train` – guardrail to ensure enough in-sample rows.
+- `--device` – torch device string (`cpu`, `cuda:0`, etc.).
+
+Outputs follow the same column contract, so downstream backtests/reports work without modification.
 
 ## Backtesting
 
@@ -131,6 +153,9 @@ python -m src.data.build_returns --source data/tft_ready_dataset.csv
 
 # 2. Fit HAR baselines
 python -m src.models.har_rv --horizons 1 5 22 --eval-splits val test
+
+# optional: fit the neural baseline (shares schema with HAR)
+python -m src.models.simple_mlp --horizons 1 5 22 --eval-splits val test
 
 # 3. Backtest the desired horizon(s)
 python -m src.backtest.run --horizon 1
