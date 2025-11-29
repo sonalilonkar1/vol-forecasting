@@ -9,10 +9,13 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import yaml
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 
 DEFAULT_TFT_DATASET = Path("data/tft_ready_dataset.csv")
 DEFAULT_TFT_PARTS   = [Path("data/tft_ready_train.csv"), Path("data/tft_ready_val.csv"), Path("data/tft_ready_test.csv")]
 DEFAULT_FEATURES    = Path("data/processed/features.parquet")
+HAR_BASE_FEATS      = {"har_d", "har_w", "har_m"}
 
 # CLI argument parsing
 def parse_args() -> argparse.Namespace:
@@ -27,6 +30,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--harx", action="store_true", help="Include exogenous: lagged VIX z, calendar dummies if available")
     p.add_argument("--target", choices=["point","agg"], default="point",
                    help="point = log RV at t+h; agg = mean of next h days of log RV")
+    p.add_argument("--estimator", choices=["ols", "ridge"], default="ols",
+                   help="Per-asset OLS (default) or pooled Ridge regression")
+    p.add_argument("--ridge-alpha", type=float, default=0.5,
+                   help="Regularization strength when --estimator ridge is selected")
     return p.parse_args()
 
 # Data loading helpers
@@ -144,6 +151,11 @@ def build_har_table(df: pd.DataFrame, horizon: int, logcol: str, target_mode: st
     tab["y_true_rv"]=np.exp(tab["y_true_logrv"].clip(-50,50))
     return tab, feats
 
+
+def _model_label(feats: Sequence[str], estimator: str) -> str:
+    prefix = "HARX" if any(f not in HAR_BASE_FEATS for f in feats) else "HAR"
+    return f"{prefix}-{estimator.upper()}"
+
 # Fit/predict loop
 def fit_har_ols(tab: pd.DataFrame, feats: list[str], masks: Dict[str,pd.Series],
                 eval_splits: Iterable[str], min_train: int, horizon: int) -> pd.DataFrame:
@@ -170,7 +182,7 @@ def fit_har_ols(tab: pd.DataFrame, feats: list[str], masks: Dict[str,pd.Series],
                 "y_true_rv": g.loc[m,"y_true_rv"].values,
                 "yhat_logrv": yhat.values,
                 "yhat_rv": np.exp(np.clip(yhat.values,-50,50)),
-                "model": "HARX-OLS" if any(c.startswith("vix_") or c.endswith("_lag") for c in feats if c not in ["har_d","har_w","har_m"]) else "HAR-OLS",
+                "model": _model_label(feats, "OLS"),
                 "horizon": horizon,
                 "split": sp,
             })
@@ -181,6 +193,47 @@ def fit_har_ols(tab: pd.DataFrame, feats: list[str], masks: Dict[str,pd.Series],
     if skipped:
         print(f"Skipped {len(skipped)} assets (<{min_train} train rows): {', '.join(skipped)}")
     return pred
+
+
+def fit_har_ridge(tab: pd.DataFrame, feats: list[str], masks: Dict[str,pd.Series],
+                  eval_splits: Iterable[str], horizon: int, min_train: int, alpha: float) -> pd.DataFrame:
+    idx = tab.index
+    base_mask = tab[feats].notna().all(axis=1) & tab["y_true_logrv"].notna()
+    train_mask = masks["train"].reindex(idx).fillna(False) & base_mask
+    if train_mask.sum() < max(1, min_train):
+        raise ValueError(f"Need at least {min_train} training rows for Ridge estimator; got {train_mask.sum()}")
+
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(tab.loc[train_mask, feats])
+    ytr = tab.loc[train_mask, "y_true_logrv"].to_numpy(float)
+    ridge = Ridge(alpha=alpha, random_state=0)
+    ridge.fit(Xtr, ytr)
+
+    rows = []
+    label = _model_label(feats, "Ridge")
+    for sp in eval_splits:
+        mask = masks[sp].reindex(idx).fillna(False) & base_mask
+        if not mask.any():
+            continue
+        Xoos = scaler.transform(tab.loc[mask, feats])
+        yhat = ridge.predict(Xoos)
+        part = pd.DataFrame({
+            "date": tab.loc[mask, "date"].values,
+            "asset": tab.loc[mask, "asset"].values,
+            "y_true_logrv": tab.loc[mask, "y_true_logrv"].values,
+            "y_true_rv": tab.loc[mask, "y_true_rv"].values,
+            "yhat_logrv": yhat,
+            "yhat_rv": np.exp(np.clip(yhat, -50, 50)),
+            "model": label,
+            "horizon": horizon,
+            "split": sp,
+        })
+        rows.append(part)
+
+    if not rows:
+        raise ValueError("No predictions produced; check eval-splits or feature coverage")
+    return (pd.concat(rows, ignore_index=True)
+              .sort_values(["date", "asset"]).reset_index(drop=True))
 
 # Main entry point
 def main():
@@ -195,8 +248,16 @@ def main():
     for H in args.horizons:
         tab, feats = build_har_table(df, horizon=H, logcol=logc, target_mode=args.target, use_harx=args.harx)
         masks = compute_masks(tab["date"], cfg)
-        preds = fit_har_ols(tab, feats, masks, args.eval_splits, args.min_train, horizon=H)
-        out   = args.out_dir / f"{'harx' if args.harx else 'har'}_h{H}.csv"
+        if args.estimator == "ols":
+            preds = fit_har_ols(tab, feats, masks, args.eval_splits, args.min_train, horizon=H)
+        else:
+            preds = fit_har_ridge(tab, feats, masks, args.eval_splits, horizon=H,
+                                   min_train=args.min_train, alpha=args.ridge_alpha)
+
+        prefix = "harx" if args.harx else "har"
+        if args.estimator == "ridge":
+            prefix = f"{prefix}_ridge"
+        out   = args.out_dir / f"{prefix}_h{H}.csv"
         preds.to_csv(out, index=False)
         counts = preds.groupby("split").size().to_dict()
         print(f"H={H}: wrote {len(preds):,} rows to {out} {counts}")
