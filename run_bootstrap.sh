@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# >>> CHANGE THIS to your GitHub repo URL (https or ssh)
+REPO_URL="https://github.com/sonalilonkar1/vol-forecasting.git"
+
+# 1) Clone your GitHub repo
+git clone "$REPO_URL"
+cd vol-forecasting
+
 # 2) Project skeleton
 mkdir -p data/{raw,processed,meta} configs \
          src/{data,features,models,train,backtest,utils} \
@@ -64,19 +71,3 @@ python -m pip install -r requirements.txt
 make check
 MD
 
-# 8) Commit & push
-git add .
-git commit -m "bootstrap structure, env, ignores" || true
-git push origin main || echo "Note: push may be blocked by branch protection or missing auth."
-
-# 9) Create branches for both members
-git checkout -b feature/forecasting-skeleton
-git push -u origin feature/forecasting-skeleton || true
-
-git checkout main
-git checkout -b feature/portfolio-engine
-git push -u origin feature/portfolio-engine || true
-
-echo "✅ Done. Branches created:"
-echo " - feature/forecasting-skeleton"
-echo " - feature/portfolio-engine"
