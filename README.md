@@ -38,6 +38,10 @@ The CLI mirrors the refined notebook logic: strict t-1 features, split-aware tra
 # From repo root
 python -m src.models.har_rv --horizons 1 5 22 --eval-splits val test
 
+# pooled Ridge variant
+python -m src.models.har_rv --estimator ridge --ridge-alpha 0.5 \
+	--horizons 1 5 22 --eval-splits val test
+
 # or use the refined variant with identical flags
 python -m src.models.har_rv_refined --horizons 1 5 22 \
 	--eval-splits val test \
@@ -53,8 +57,11 @@ Key options:
 - `--splits-config` – YAML describing time windows.
 - `--out-dir` – destination directory (default `experiments/preds`).
 - `--min-train` – minimum train rows per asset before fitting HAR.
+- `--estimator` – choose `ols` (per-asset regressions) or `ridge` (pooled/sklearn Ridge).
+- `--ridge-alpha` – regularization strength when the Ridge estimator is active.
+- `--harx` – extend the feature set with VIX/calendar lags when those columns exist.
 
-Each horizon writes `experiments/preds/har_h{H}.csv` that respects the standard contract:
+Each horizon writes `experiments/preds/har_h{H}.csv` (or `har_ridge_h{H}.csv` / `harx_ridge_h{H}.csv` when Ridge is selected) that respects the standard contract:
 
 ```
 date,asset,y_true_logrv,y_true_rv,yhat_logrv,yhat_rv,model,horizon,split
