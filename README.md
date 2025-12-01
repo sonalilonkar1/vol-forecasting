@@ -23,7 +23,7 @@ python -m pip install -r requirements.txt
 
 ## Data/layout recap
 
-- `data/tft_ready_dataset.csv` (or *_train/val/test CSVs) – preferred input. The scripts fall back to `data/processed/features.parquet` if TFT artifacts are missing.
+- `data/tft_ready_dataset.csv` (or *_train/val/test CSVs) – preferred input. The scripts fall back to `data/processed/features.parquet` if TFT artifacts are missing. **Note:** Oxford–Man realized-volatility feeds were discontinued, so these panels now come from Yahoo Finance adjusted prices/returns via `src/data/fetch_etf_prices.py` + `src/data/make_rv_from_daily.py` (we square daily returns as the realized-vol proxy).
 - `experiments/preds/` – model predictions, one CSV per horizon.
 - `experiments/results/` – backtest outputs.
 - `configs/splits.yaml` – time windows plus optional `assets` filter and `embargo_days`.
@@ -89,6 +89,50 @@ Key knobs:
 
 Outputs follow the same column contract, so downstream backtests/reports work without modification.
 
+## GRU / LSTM baselines
+
+Need a sequence model without jumping straight to TFT? The shared RNN CLI slides a fixed lookback window over the HAR table, encodes it with either a GRU or LSTM cell, and writes the same prediction schema (`gru_h{H}.csv`, `lstm_h{H}.csv`).
+
+```bash
+# GRU with 45-day window
+python -m src.models.simple_rnn --cell-type gru --lookback 45 --horizons 1 5 22 --eval-splits val test
+
+# LSTM variant with HARX features
+python -m src.models.simple_rnn --cell-type lstm --harx --lookback 60 \
+	--hidden-dim 128 --num-layers 2 --dropout 0.1
+```
+
+Key knobs:
+
+- `--cell-type` – `gru` (default) or `lstm`.
+- `--lookback` – number of trading days per sequence window (must cover the history you need).
+- `--hidden-dim`, `--num-layers`, `--dropout` – encoder depth/regularization.
+- `--epochs`, `--batch-size`, `--lr`, `--weight-decay`, `--device` – training loop controls.
+- `--harx` – include VIX/calendar features when available, just like the MLP/HARX flag.
+
+Outputs mirror the HAR/MLP schema, so no downstream changes are required.
+
+## Temporal Fusion Transformer
+
+The Lightning-based TFT baseline trains all requested horizons jointly and now emits:
+
+- Per-horizon CSVs (`tft_h1.csv`, `tft_h5.csv`, `tft_h22.csv`, …) for drop-in backtests.
+- A multi-horizon file (`tft_all_horizons.csv` by default) packed with every split/horizon in one place for rapid analysis or custom slicing.
+
+```bash
+python -m src.models.tft --horizons 1 5 22 --eval-splits val test --device cuda:0 \
+	--loss qlike --lookback 90 --hidden-dim 128 --combined-out experiments/preds/tft_full.csv
+```
+
+Useful flags mirror the other neural baselines (`--harx`, `--min-train`, `--splits-config`, etc.), with a few TFT-specific knobs:
+
+- `--lookback`, `--hidden-dim`, `--lstm-layers`, `--dropout`, `--num-heads` – architectural capacity.
+- `--loss` – `mse` or `qlike` objective.
+- `--grad-clip`, `--batch-size`, `--epochs` – training stability controls.
+- `--combined-out` – custom path for the multi-horizon export (omit to use the default under `out-dir`).
+
+Every export respects the standard column contract so evaluation scripts pick them up automatically.
+
 ## Backtesting
 
 The runner now consumes any prediction CSV and applies consistent portfolio settings.
@@ -115,6 +159,9 @@ Options:
 - `--returns-path` – realized return panel (`date,asset,ret_1d` or `ret`). Defaults to the config value then `data/processed/returns.csv`.
 - `--return-col` – custom column name when the file doesn’t use `ret_1d`.
 - `--weight-cap` – absolute per-asset cap applied after vol targeting (defaults to config value or 1.0).
+- `--allocator` – choose `inverse_vol` or `risk_parity` sizing.
+- `--risk-parity-window`, `--risk-parity-min-obs`, `--cov-shrink` – control the rolling covariance that powers risk parity (falls back to inverse-vol if history is short).
+- `--rebalance-fraction`, `--max-turnover` – smooth towards the target weights and impose daily turnover caps to mimic no-trade/partial rebalance rules from the proposal.
 
 Runner behavior:
 
@@ -141,12 +188,18 @@ python -m src.backtest.run_batch --models har harx --horizons 22 --dry-run
 
 # Custom glob/pred directory
 python -m src.backtest.run_batch --pred-dir other_preds --pattern "*_best.csv"
+
+# Cost-sensitivity sweep (5/10/20 bps)
+python -m src.backtest.run_batch --models har --horizons 1 5 \
+	--cost-bps-grid 5 10 20 --allocator risk_parity
 ```
 
 - `--models` – space-separated prefixes (case-insensitive). Default: all.
 - `--horizons` – limit to certain `_h{H}` suffixes (integers).
 - `--pattern` – glob applied inside `--pred-dir` before filtering (`*.csv` by default).
 - `--dry-run` – print which files match without executing backtests.
+- `--cost-bps-grid` – run the selected files at multiple transaction-cost assumptions, automatically suffixing the output filenames (e.g., `_cost5_bt.csv`).
+- All allocator/turnover knobs available in the single-run CLI are mirrored here (`--allocator`, `--risk-parity-window`, `--rebalance-fraction`, etc.).
 
 `make bt` now respects environment overrides, e.g. `make bt MODELS="har harx" H="1 5"`.
 
@@ -172,3 +225,54 @@ python -m src.backtest.run --horizon 5
 ```
 
 From here you can plug in additional models (HARX, GARCH, TFT, etc.) as long as they emit the same prediction schema, keeping the downstream evaluation stack unchanged.
+
+## Allocator & cost-sweep studies
+
+The new allocator knobs make it easy to benchmark inverse-volatility vs. risk-parity sizing under different trading-cost assumptions. A typical experiment:
+
+```bash
+# Inverse-vol, 1-day horizon, three cost levels
+python -m src.backtest.run_batch --models har --horizons 1 \
+	--allocator inverse_vol --cost-bps-grid 5 10 20 \
+	--out-dir experiments/results/inv_vol
+
+# Risk parity (90-day rolling cov, partial rebalances), same costs
+python -m src.backtest.run_batch --models har --horizons 1 \
+	--allocator risk_parity --risk-parity-window 90 --risk-parity-min-obs 30 \
+	--rebalance-fraction 0.5 --cost-bps-grid 5 10 20 \
+	--out-dir experiments/results/risk_parity
+```
+
+Each run writes `{model}_h{H}_cost{X}p_bt.csv` inside the chosen folder. You can summarize them with a quick pandas script (or drop this into `python - <<'PY' ... PY`):
+
+```python
+from pathlib import Path
+import pandas as pd
+rows = []
+for allocator in ["inv_vol", "risk_parity"]:
+	for csv in (Path("experiments/results") / allocator).glob("*.csv"):
+		df = pd.read_csv(csv)
+		rows.append({
+			"allocator": allocator,
+			"file": csv.name,
+			"cost_bps": csv.stem.split("_cost")[1].split('p')[0],
+			"final_cum_net": df["cum_net"].iloc[-1],
+			"avg_turnover": df["turnover"].mean(),
+			"avg_cost": df["cost"].mean(),
+		})
+summary = pd.DataFrame(rows).sort_values(["allocator", "cost_bps"])
+print(summary)
+```
+
+Latest HAR@H=1 results (test split):
+
+| Allocator | Cost (bps) | Final Cum Net | Avg Turnover | Avg Cost |
+|-----------|------------|---------------|--------------|----------|
+| inverse_vol | 5 | 1.2989 | 0.0009 | 4.5e-7 |
+| inverse_vol | 10 | 1.2982 | 0.0009 | 9.1e-7 |
+| inverse_vol | 20 | 1.2967 | 0.0009 | 1.8e-6 |
+| risk_parity | 5 | **1.4175** | 0.0180 | 9.0e-6 |
+| risk_parity | 10 | 1.4016 | 0.0180 | 1.8e-5 |
+| risk_parity | 20 | 1.3702 | 0.0180 | 3.6e-5 |
+
+Risk parity trades more (≈20× turnover) but still delivers higher after-cost performance across all three cost levels and lowers the average predicted portfolio volatility (~5.4% vs. 6.6%). Use these folders as a template when running the same comparison for other models/horizons.

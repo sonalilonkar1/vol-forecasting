@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import pandas as pd
 import yaml
 
-from .engine import backtest
+try:  # Support both `python -m` and direct script execution
+    from .engine import backtest
+except ImportError:  # pragma: no cover - fallback only when run as script
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.append(str(project_root))
+    from src.backtest.engine import backtest
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +74,42 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Override absolute per-asset weight cap (default sourced from config).",
+    )
+    parser.add_argument(
+        "--allocator",
+        choices=["inverse_vol", "risk_parity"],
+        default=None,
+        help="Select portfolio construction rule (default from config, inverse_vol if unset).",
+    )
+    parser.add_argument(
+        "--risk-parity-window",
+        type=int,
+        default=None,
+        help="Rolling window (days) for risk parity covariance estimation.",
+    )
+    parser.add_argument(
+        "--risk-parity-min-obs",
+        type=int,
+        default=None,
+        help="Minimum historical observations before enabling risk parity weighting.",
+    )
+    parser.add_argument(
+        "--rebalance-fraction",
+        type=float,
+        default=None,
+        help="Fraction of the gap to close each rebalance (0-1). 1.0 = full move.",
+    )
+    parser.add_argument(
+        "--max-turnover",
+        type=float,
+        default=None,
+        help="Maximum allowed daily turnover (0-1). Default: unlimited.",
+    )
+    parser.add_argument(
+        "--cov-shrink",
+        type=float,
+        default=None,
+        help="Diagonal shrinkage added to rolling covariances for numerical stability.",
     )
     parser.add_argument(
         "--returns-path",
@@ -158,6 +201,22 @@ if __name__ == "__main__":
     default_returns = cfg.get("returns_path", "data/processed/returns.csv")
     returns_path = args.returns_path if args.returns_path is not None else Path(default_returns)
     return_col = args.return_col if args.return_col is not None else cfg.get("returns_col")
+    allocator = args.allocator if args.allocator is not None else cfg.get("allocator", "inverse_vol")
+    rp_window = (
+        args.risk_parity_window if args.risk_parity_window is not None else cfg.get("risk_parity_window", 60)
+    )
+    rp_min = (
+        args.risk_parity_min_obs
+        if args.risk_parity_min_obs is not None
+        else cfg.get("risk_parity_min_obs", 20)
+    )
+    rebalance_fraction = (
+        args.rebalance_fraction
+        if args.rebalance_fraction is not None
+        else cfg.get("rebalance_fraction", 1.0)
+    )
+    max_turnover = args.max_turnover if args.max_turnover is not None else cfg.get("max_turnover")
+    cov_shrink = args.cov_shrink if args.cov_shrink is not None else cfg.get("cov_shrink", 1e-6)
 
     preds = load_predictions(pred_path)
     returns_df, actual_return_col = load_returns(returns_path, preferred_col=return_col)
@@ -169,6 +228,12 @@ if __name__ == "__main__":
         no_trade_pp=no_trade_pp,
         return_col=actual_return_col,
         weight_cap=weight_cap,
+        allocator=allocator,
+        risk_parity_window=rp_window,
+        risk_parity_min_obs=rp_min,
+        rebalance_fraction=rebalance_fraction,
+        max_turnover=max_turnover,
+        cov_shrink=cov_shrink,
     )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
