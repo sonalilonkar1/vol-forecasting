@@ -67,6 +67,64 @@ Each horizon writes `experiments/preds/har_h{H}.csv` (or `har_ridge_h{H}.csv` / 
 date,asset,y_true_logrv,y_true_rv,yhat_logrv,yhat_rv,model,horizon,split
 ```
 
+## GARCH(1,1) baseline
+
+Drop-in ARCH-style benchmark powered by the `arch` package. Set the output directory/prefix so files land next to the other models.
+
+```bash
+python -m src.models.garch \
+	--source data/tft_ready_dataset.csv \
+	--horizons 1 5 22 \
+	--eval-splits val test \
+	--splits-config configs/splits.yaml \
+	--min-train 252 \
+	--refit-every 22 \
+	--out-dir experiments/preds \
+	--file-prefix garch
+```
+
+Key knobs:
+
+- `--min-train` – minimum per-asset observations before the first fit (keep ≥ 1 trading year for stability).
+- `--refit-every` – rolling refit cadence in trading days (e.g., 22 for monthly, 66 for quarterly).
+- `--out-dir` / `--file-prefix` – control the final filepath (e.g., `experiments/preds/garch_h1.csv`).
+
+Each horizon emits `<prefix>_h{H}.csv` with the shared column contract, so you can immediately run `python src/backtest/run.py --pred-path experiments/preds/garch_h1.csv ...`.
+
+## N-BEATS baseline
+
+Multi-stack fully connected forecaster that consumes lagged log-volatility windows. Use CPU (`--device cpu`) unless your PyTorch install has CUDA support.
+
+```bash
+python -m src.models.nbeats \
+	--source data/tft_ready_dataset.csv \
+	--horizons 1 5 22 \
+	--lookback 90 \
+	--hidden-dim 128 \
+	--num-stacks 3 \
+	--num-blocks 2 \
+	--theta-dim 8 \
+	--dropout 0.1 \
+	--epochs 50 \
+	--batch-size 512 \
+	--lr 1e-3 \
+	--weight-decay 1e-4 \
+	--eval-splits val test \
+	--min-train 500 \
+	--device cpu \
+	--out-dir experiments/preds \
+	--file-prefix nbeats
+```
+
+Key knobs:
+
+- `--lookback` – sliding window length for each training sample.
+- `--hidden-dim`, `--num-stacks`, `--num-blocks`, `--theta-dim`, `--dropout` – capacity/regularization.
+- `--device` – `cpu` or `cuda:<id>` depending on your torch build.
+- `--out-dir` / `--file-prefix` – match the shared predictions folder just like other models.
+
+Outputs drop into `experiments/preds/nbeats_h{H}.csv` (or whatever prefix you chose) with the standard schema.
+
 ## Simple MLP baseline
 
 When you want a quick non-linear reference without leaving pandas/torch, the lightweight MLP leverages the same HAR feature table and produces identical CSVs (`mlp_h{H}.csv`).
