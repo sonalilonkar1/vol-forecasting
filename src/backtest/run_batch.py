@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 from typing import Sequence
 
@@ -88,6 +89,7 @@ def run_one(
     print(
         f"[ok] {pred_csv.name} (cost={cost_bps}bps{', suffix='+suffix if suffix else ''}) → {out_path.name} ({len(out)} rows)"
     )
+    return out_path
 
 def filter_prediction_files(
     files: Sequence[Path],
@@ -158,6 +160,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override allocator (default from config).",
     )
+    parser.add_argument(
+        "--allocators",
+        nargs="+",
+        choices=["inverse_vol", "risk_parity"],
+        default=None,
+        help="Run multiple allocators sequentially (overrides --allocator when provided).",
+    )
     parser.add_argument("--risk-parity-window", type=int, default=None)
     parser.add_argument("--risk-parity-min-obs", type=int, default=None)
     parser.add_argument("--rebalance-fraction", type=float, default=None)
@@ -202,7 +211,8 @@ def main():
         cost_grid = [float(x) for x in args.cost_bps_grid]
     no_trade_pp = cfg.get("no_trade_pp", 5)
     weight_cap = cfg.get("weight_cap", 1.0)
-    allocator = args.allocator if args.allocator is not None else cfg.get("allocator", "inverse_vol")
+    default_allocator = (args.allocator if args.allocator is not None else cfg.get("allocator", "inverse_vol")).lower()
+    selected_allocators = [a.lower() for a in args.allocators] if args.allocators else [default_allocator]
     rp_window = (
         args.risk_parity_window if args.risk_parity_window is not None else cfg.get("risk_parity_window", 60)
     )
@@ -219,8 +229,7 @@ def main():
     max_turnover = args.max_turnover if args.max_turnover is not None else cfg.get("max_turnover")
     cov_shrink = args.cov_shrink if args.cov_shrink is not None else cfg.get("cov_shrink", 1e-6)
 
-    engine_kwargs = dict(
-        allocator=allocator,
+    base_engine_kwargs = dict(
         risk_parity_window=rp_window,
         risk_parity_min_obs=rp_min,
         rebalance_fraction=rebalance_fraction,
@@ -229,21 +238,49 @@ def main():
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for p in files:
-        for cost in cost_grid:
-            suffix = f"_cost{str(cost).replace('.', 'p')}"
-            run_one(
-                p,
-                out_dir,
-                returns_df,
-                return_col,
-                target_vol=target_vol,
-                cost_bps=cost,
-                no_trade_pp=no_trade_pp,
-                weight_cap=weight_cap,
-                engine_kwargs=engine_kwargs,
-                name_suffix=suffix if len(cost_grid) > 1 else "",
-            )
+    summary_rows: list[dict[str, str]] = []
+    for alloc in selected_allocators:
+        alloc_dir = out_dir / alloc if len(selected_allocators) > 1 else out_dir
+        alloc_dir.mkdir(parents=True, exist_ok=True)
+        engine_kwargs = dict(base_engine_kwargs)
+        engine_kwargs["allocator"] = alloc
+
+        for p in files:
+            for cost in cost_grid:
+                suffix_parts = []
+                if len(selected_allocators) > 1:
+                    suffix_parts.append(f"_{alloc}")
+                if len(cost_grid) > 1:
+                    suffix_parts.append(f"_cost{str(cost).replace('.', 'p')}")
+                suffix = "".join(suffix_parts)
+                out_path = run_one(
+                    p,
+                    alloc_dir,
+                    returns_df,
+                    return_col,
+                    target_vol=target_vol,
+                    cost_bps=cost,
+                    no_trade_pp=no_trade_pp,
+                    weight_cap=weight_cap,
+                    engine_kwargs=engine_kwargs,
+                    name_suffix=suffix,
+                )
+                summary_rows.append(
+                    {
+                        "allocator": alloc,
+                        "cost_bps": str(cost),
+                        "pred_file": p.name,
+                        "output_csv": str(out_path),
+                    }
+                )
+
+    if summary_rows:
+        summary_path = out_dir / "allocator_summary.csv"
+        with summary_path.open("w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(summary_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(summary_rows)
+        print(f"[summary] Wrote allocator summary to {summary_path}")
 
 if __name__ == "__main__":
     main()

@@ -147,6 +147,35 @@ Key knobs:
 
 Outputs follow the same column contract, so downstream backtests/reports work without modification.
 
+## Gradient-Boosted Trees (XGBoost)
+
+Tree-based baseline that mirrors the HAR CLI contract but fits a pooled XGBoost regressor with strict t-1 features. Uses TFT-ready CSVs (or `features.parquet`) and writes `gbt_xgb_h{H}.csv` per horizon.
+
+```bash
+python src/models/gbt.py \
+	--horizons 1 5 22 \
+	--eval-splits val test \
+	--splits-config configs/splits.yaml \
+	--out-dir experiments/preds \
+	--n-estimators 2000 \
+	--learning-rate 0.03 \
+	--max-depth 5 \
+	--subsample 0.9 \
+	--colsample-bytree 0.9 \
+	--lambda_ 1.0 \
+	--early-stopping 50
+```
+
+Key knobs:
+
+- `--source` – explicit feature table (otherwise auto-detect TFT files/parquet).
+- `--n-estimators`, `--learning-rate`, `--max-depth` – standard XGBoost capacity controls.
+- `--subsample`, `--colsample-bytree`, `--lambda_` – regularization/variance trade-offs.
+- `--early-stopping` – patience on validation loss when a `val` split exists.
+- `--seed` – ensures reproducible trees across dry runs.
+
+Each export uses the shared schema so backtests/reporting scripts consume it with no changes. For quick smoke tests, target `--eval-splits val` and a scratch `--out-dir experiments/preds/tmp_gbt` to keep artifacts separate.
+
 ## GRU / LSTM baselines
 
 Need a sequence model without jumping straight to TFT? The shared RNN CLI slides a fixed lookback window over the HAR table, encodes it with either a GRU or LSTM cell, and writes the same prediction schema (`gru_h{H}.csv`, `lstm_h{H}.csv`).
@@ -169,6 +198,36 @@ Key knobs:
 - `--harx` – include VIX/calendar features when available, just like the MLP/HARX flag.
 
 Outputs mirror the HAR/MLP schema, so no downstream changes are required.
+
+## Informer sequence model
+
+Transformer-style encoder that operates on per-asset sliding windows (default 64 trading days) and trains a pooled model per horizon. Handles the same CLI arguments as the HAR stack plus sequence/training hyperparameters.
+
+```bash
+python src/models/informer.py \
+	--horizons 1 5 22 \
+	--seq-len 64 \
+	--batch-size 64 \
+	--max-epochs 50 \
+	--patience 8 \
+	--lr 1e-3 \
+	--weight-decay 1e-4 \
+	--d-ff 256 \
+	--n-layers 3 \
+	--n-heads 2 \
+	--dropout 0.1 \
+	--eval-splits val test \
+	--out-dir experiments/preds
+```
+
+Highlights:
+
+- `--seq-len` – lookback window; shorten (e.g., 32) for dry runs.
+- `--max-epochs` / `--patience` – early-stopping behavior on validation RMSE.
+- `--d-ff`, `--n-layers`, `--n-heads` – Informer depth/width controls; scale carefully to keep training tractable.
+- `--seed` – routes through deterministic seeding for reproducible experiments.
+
+Outputs land in `experiments/preds/informer_h{H}.csv` with the canonical column order, so downstream allocators treat it just like HAR/TFT results.
 
 ## Temporal Fusion Transformer
 
@@ -256,7 +315,8 @@ python -m src.backtest.run_batch --models har --horizons 1 5 \
 - `--horizons` – limit to certain `_h{H}` suffixes (integers).
 - `--pattern` – glob applied inside `--pred-dir` before filtering (`*.csv` by default).
 - `--dry-run` – print which files match without executing backtests.
-- `--cost-bps-grid` – run the selected files at multiple transaction-cost assumptions, automatically suffixing the output filenames (e.g., `_cost5_bt.csv`).
+- `--allocators` – run several allocators (e.g., `inverse_vol risk_parity`) in one pass. When multiple allocators are supplied, results are routed into per-allocator subfolders and file names get `_allocator_*` suffixes.
+- `--cost-bps-grid` – run the selected files at multiple transaction-cost assumptions, automatically suffixing the output filenames (e.g., `_cost5p_bt.csv`).
 - All allocator/turnover knobs available in the single-run CLI are mirrored here (`--allocator`, `--risk-parity-window`, `--rebalance-fraction`, etc.).
 
 `make bt` now respects environment overrides, e.g. `make bt MODELS="har harx" H="1 5"`.
@@ -334,3 +394,18 @@ Latest HAR@H=1 results (test split):
 | risk_parity | 20 | 1.3702 | 0.0180 | 3.6e-5 |
 
 Risk parity trades more (≈20× turnover) but still delivers higher after-cost performance across all three cost levels and lowers the average predicted portfolio volatility (~5.4% vs. 6.6%). Use these folders as a template when running the same comparison for other models/horizons.
+
+### Automation helpers
+
+- **GBT sweeps:** `scripts/run_gbt_sweep.py` fans out hyperparameter grids for `src/models/gbt.py`, dropping each run into `experiments/preds/gbt_sweeps/<run_id>` and writing `sweep_summary.csv` with the hyperparameters, runtime, and produced files. Example:
+
+	```bash
+	PYTHONPATH=$PWD python scripts/run_gbt_sweep.py \
+			--n-estimators 1000 2000 \
+			--learning-rates 0.02 0.03 \
+			--max-depths 4 5 \
+			--horizons 1 5 22 \
+			--out-dir experiments/preds/gbt_sweeps
+	```
+
+- **Allocator studies:** `src/backtest/run_batch.py` now accepts `--allocators inverse_vol risk_parity` plus a shared `--cost-bps-grid`. Results are organized by allocator (subdirectories + summary CSV), so you can compare allocator/cost combinations from a single command.

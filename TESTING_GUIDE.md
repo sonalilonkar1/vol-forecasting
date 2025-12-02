@@ -27,6 +27,8 @@ This playbook spells out how to exercise every forecasting model, what knobs to 
 | GRU / LSTM   | `--cell-type`, `--lookback`, `--hidden-dim`| Lookback ∈ {30, 45, 60}; hidden dim ∈ {64, 128}; cell ∈ {gru, lstm}              |
 | N-BEATS      | `--lookback`, `--hidden-dim`, `--num-stacks`, `--device` | Lookback ∈ {60, 90}; hidden dim ∈ {64, 128}; stacks ∈ {2, 3}; device ∈ {cpu, cuda:0} |
 | TFT          | `--lookback`, `--hidden-dim`, `--num-heads`| Lookback ∈ {60, 90}; hidden dim ∈ {128, 256}; heads ∈ {4, 8}; dropout ∈ {0.1,0.2}|
+| GBT (XGBoost)| `--n-estimators`, `--learning-rate`, `--max-depth`, `--subsample` | Trees ∈ {500, 1000, 2000}; learning rate ∈ {0.02, 0.03, 0.05}; depth ∈ {4, 5, 6}; subsample/colsample ∈ {0.7, 0.9} |
+| Informer     | `--seq-len`, `--d-ff`, `--n-layers`, `--n-heads`, `--max-epochs` | Seq-len ∈ {32, 64}; FF dim ∈ {256, 384}; layers ∈ {2, 3, 4}; heads ∈ {2, 4}; patience ∈ {6, 10} |
 
 > **Tip:** keep one hyperparameter sweep active at a time to isolate effects and limit GPU time.
 
@@ -95,7 +97,7 @@ Plot helpers (`notebooks/analysis.ipynb` or a custom script) should chart cumula
 
 ## 7. Allocator comparisons & cost sweeps
 
-Every material model sweep should include at least one allocator study so we can connect forecast skill to economic value under realistic trading frictions. Use the batch CLI to generate matched runs for inverse-volatility and risk-parity sizing:
+Every material model sweep should include at least one allocator study so we can connect forecast skill to economic value under realistic trading frictions. Use the batch CLI to generate matched runs for inverse-volatility and risk-parity sizing (single command when passing `--allocators inverse_vol risk_parity`):
 
 ```bash
 # Inverse-vol baseline (writes to experiments/results/inv_vol)
@@ -113,8 +115,9 @@ python -m src.backtest.run_batch --models <prefix> --horizons 1 5 22 \
 Guidelines:
 
 1. Export at least the test split for each horizon before launching these runs.
-2. Use separate folders (`inv_vol/`, `risk_parity/`, or more specific names) so summaries stay organized.
-3. After the runs finish, summarize the outputs with a quick pandas script to capture final cumulative net, turnover, cost, and realized volatility for every cost bucket:
+2. Prefer the multi-allocator option: `python -m src.backtest.run_batch --models har --horizons 1 5 --allocators inverse_vol risk_parity --cost-bps-grid 5 10 20 --out-dir experiments/results/allocators --risk-parity-window 90 --risk-parity-min-obs 30 --rebalance-fraction 0.5`. The command creates allocator subfolders automatically and appends `_allocator_<name>` suffixes when needed.
+3. Review the generated `experiments/results/allocators/allocator_summary.csv` (written automatically whenever multiple allocators/costs are run) for a quick table of `pred_file`, allocator, cost, and output path.
+4. When you need additional diagnostics, summarize the per-run CSVs with a quick pandas script to capture final cumulative net, turnover, cost, and realized volatility for every cost bucket:
 
 ```python
 from pathlib import Path
@@ -136,8 +139,8 @@ summary = pd.DataFrame(rows).sort_values(["allocator", "cost_bps"])
 print(summary)
 ```
 
-4. Record the summary table inside `experiments/results/metrics_log.md` (or a dedicated allocator section). Note especially how risk parity’s lower portfolio sigma and higher turnover interact with costs.
-5. When writing the report, include both the gross and net cumulative curves plus turnover/cost diagnostics so readers see the trade-off clearly.
+5. Record the summary table inside `experiments/results/metrics_log.md` (or a dedicated allocator section). Note especially how risk parity’s lower portfolio sigma and higher turnover interact with costs.
+6. When writing the report, include both the gross and net cumulative curves plus turnover/cost diagnostics so readers see the trade-off clearly.
 
 ---
 
@@ -209,3 +212,59 @@ Guidance:
 1. Verify the torch device before launching runs to avoid the “Torch not compiled with CUDA enabled” assertion.
 2. Because training is stochastic, log the random seed (`--seed`) in your experiment tracker when comparing sweeps.
 3. Backtests use the same `<prefix>_h{H}.csv` contract, so no special handling is required once the files land in `experiments/preds/`.
+
+### Gradient-Boosted Trees (XGBoost)
+
+XGBoost regression baseline that shares the HAR CLI contract. Fits one pooled tree ensemble per horizon with strict t-1 features and validation-driven early stopping.
+
+```bash
+python src/models/gbt.py \
+   --horizons 1 5 22 \
+   --eval-splits val test \
+   --splits-config configs/splits.yaml \
+   --out-dir experiments/preds \
+   --n-estimators 2000 \
+   --learning-rate 0.03 \
+   --max-depth 5 \
+   --subsample 0.9 \
+   --colsample-bytree 0.9 \
+   --lambda_ 1.0 \
+   --early-stopping 50 \
+   --seed 42
+```
+
+Checklist:
+
+1. Confirm TFT-ready CSVs exist; the CLI auto-detects `*_train/val/test` parts or `features.parquet` when `--source` is omitted.
+2. Capture validation RMSE/QLIKE from the output CSVs and log them alongside the tree hyperparameters.
+3. Run per-horizon backtests with `python -m src.backtest.run --pred-path experiments/preds/gbt_xgb_h1.csv` (repeat for H=5,22) plus allocator/cost sweeps so comparisons stay consistent.
+4. For grid searches, adjust `--n-estimators`, `--learning-rate`, and `--max-depth` before widening `--subsample`/`--colsample-bytree`; deeper/more numerous trees can overfit without early stopping.
+5. For larger sweeps, prefer `PYTHONPATH=$PWD python scripts/run_gbt_sweep.py --n-estimators 1000 2000 --learning-rates 0.02 0.03 --max-depths 4 5 --out-dir experiments/preds/gbt_sweeps` to keep artifacts separated and capture a `sweep_summary.csv` manifest of every run.
+
+### Informer
+
+Informer-style transformer baseline that builds per-asset sliding windows (default 64 days) and trains a pooled model per horizon. Runs on CPU or CUDA and emits `informer_h{H}.csv` with the canonical column order.
+
+```bash
+python src/models/informer.py \
+   --horizons 1 5 22 \
+   --seq-len 64 \
+   --batch-size 64 \
+   --max-epochs 50 \
+   --patience 8 \
+   --lr 1e-3 \
+   --weight-decay 1e-4 \
+   --d-ff 256 \
+   --n-layers 3 \
+   --n-heads 2 \
+   --dropout 0.1 \
+   --eval-splits val test \
+   --out-dir experiments/preds
+```
+
+Guidelines:
+
+1. Shorten `--seq-len` (e.g., 32) and `--max-epochs`/`--patience` for quick smoke tests; restore the full settings for production sweeps.
+2. Monitor the training log for `val_RMSE`/`val_QLIKE` to verify early stopping when progress stalls.
+3. Backtest each horizon with the same allocator/cost assumptions used for other models so economic value comparisons remain apples-to-apples.
+4. When running on GPU, keep an eye on memory; reduce `--batch-size` or `--d-ff` if you hit OOM errors.

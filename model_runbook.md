@@ -95,7 +95,46 @@ python -m src.models.simple_mlp \
 
 ---
 
-## 4. Sequence Model (GRU/LSTM)
+## 4. Gradient-Boosted Trees (GBT-XGB)
+
+Pooled XGBoost regressor sharing the HAR feature contract and writing `gbt_xgb_h{H}.csv` files.
+
+**Command (baseline run)**
+```bash
+python src/models/gbt.py \
+  --horizons 1 5 22 \
+  --eval-splits val test \
+  --splits-config configs/splits.yaml \
+  --out-dir experiments/preds \
+  --n-estimators 2000 \
+  --learning-rate 0.03 \
+  --max-depth 5 \
+  --subsample 0.9 \
+  --colsample-bytree 0.9 \
+  --lambda_ 1.0 \
+  --early-stopping 50 \
+  --seed 42
+```
+
+**Parameter meaning**
+- `--n-estimators`, `--learning-rate`, `--max-depth`: core capacity controls; sweep {500, 1000, 2000} × {0.02, 0.03, 0.05} × depth {4, 5, 6}.
+- `--subsample`, `--colsample-bytree`: row/feature sampling ratios that regularize the ensemble.
+- `--lambda_`: L2 penalty; increase when validation error oscillates.
+- `--early-stopping`: patience on validation RMSE (needs a `val` split in `--eval-splits`).
+- `--source`: optional override when pointing at alternative feature tables.
+
+**Result interpretation**
+- Each horizon writes `gbt_xgb_h{H}.csv` with the canonical schema, so `src.backtest.run` ingestion is automatic.
+- XGBoost logs show best iteration; if training runs the full `--n-estimators`, consider increasing rounds or reducing `--learning-rate`.
+- Use `xgboost.plot_importance` for feature diagnostics during report prep (see `grad_boost_trees.py`).
+
+**Sweep automation**
+- Launch grids with `PYTHONPATH=$PWD python scripts/run_gbt_sweep.py --n-estimators 1000 2000 --learning-rates 0.02 0.03 --max-depths 4 5 --out-dir experiments/preds/gbt_sweeps`.
+- Each combination gets its own subdirectory plus an entry inside `experiments/preds/gbt_sweeps/sweep_summary.csv` (columns: run_id, hyperparameters, status, files). Use this manifest to decide which runs to backtest.
+
+---
+
+## 5. Sequence Model (GRU/LSTM)
 
 **Command (GRU dry-run)**
 ```bash
@@ -125,7 +164,41 @@ python -m src.models.simple_rnn \
 
 ---
 
-## 5. Temporal Fusion Transformer (TFT)
+## 6. Informer
+
+Simplified Informer encoder trained per horizon with sliding windows and early stopping. Shares the HAR feature table and delivers `informer_h{H}.csv` predictions.
+
+**Command (smoke test)**
+```bash
+python src/models/informer.py \
+  --horizons 1 5 \
+  --seq-len 32 \
+  --batch-size 64 \
+  --max-epochs 2 \
+  --patience 1 \
+  --lr 1e-3 \
+  --weight-decay 1e-4 \
+  --d-ff 128 \
+  --n-layers 2 \
+  --n-heads 2 \
+  --dropout 0.1 \
+  --eval-splits val \
+  --out-dir experiments/preds/tmp_informer
+```
+
+**Scaling up**
+- Increase `--seq-len` to 64 (or higher) and `--max-epochs` to 40–60 with `--patience 8` once basic wiring is proven.
+- Adjust `--d-ff`, `--n-layers`, `--n-heads` to trade capacity vs. runtime; monitor `val_RMSE` for overfitting.
+- Use `--batch-size` and `--device` (CPU vs. CUDA auto-detected) to fit available hardware.
+
+**Result interpretation**
+- Training logs print `[H=..] Epoch ... train_loss/val_RMSE/val_QLIKE`; confirm patience triggers before hitting `max_epochs`.
+- Predictions land in `experiments/preds/informer_h{H}.csv`; run `src.backtest.run` with the same allocator/cost profile as other models for apples-to-apples comparisons.
+- For GPU runs, record wall-clock time to benchmark efficiency against TFT.
+
+---
+
+## 7. Temporal Fusion Transformer (TFT)
 
 **Command (CPU-friendly dry-run)**
 ```bash
@@ -157,7 +230,7 @@ python -m src.models.tft \
 
 ---
 
-## 6. N-BEATS
+## 8. N-BEATS
 
 > Tip: when pasting multi-line commands in zsh, end each line with `\` to avoid the shell interpreting `--flags` as separate commands.
 
@@ -195,7 +268,7 @@ python -m src.models.nbeats \
 - Combine with `src/backtest/run.py --pred-path experiments/preds/<prefix>_h1.csv --allocator risk_parity --cost-bps 15` to benchmark economic value vs. TFT/HAR.
 
 
-## 7. Cost-Aware Backtest
+## 9. Cost-Aware Backtest
 
 **Command template**
 ```bash
@@ -212,6 +285,7 @@ python src/backtest/run.py \
 
 **Key parameters & effects**
 - `--allocator`: `inverse_vol` (simpler) vs. `risk_parity` (needs covariance estimates). Use the same allocator when comparing models to isolate signal quality.
+- `--allocators`: provide multiple allocator names (e.g., `inverse_vol risk_parity`) to execute entire allocator studies in one pass. Outputs are stored in per-allocator subdirectories and logged in `allocator_summary.csv` alongside cost assumptions.
 - `--cost-bps`: raises turnover penalty; evaluate sensitivity at 5/10/15/20 bps. Higher costs punish noisy forecasts more.
 - `--no-trade-pp`: no-trade band in percentage points; larger bands lower turnover but can lag fast volatility swings.
 - `--rebalance-fraction`, `--max-turnover`, `--weight-cap`: advanced knobs for smoother application; document any deviations when experimenting.
@@ -221,7 +295,7 @@ python src/backtest/run.py \
 
 ---
 
-## 8. Reporting Metrics & Analysis
+## 10. Reporting Metrics & Analysis
 
 For every run:
 1. **Forecast metrics**: Compute RMSE, RMSPE, QLIKE on validation/test splits. Scripts forthcoming; meanwhile, load the CSVs into notebooks for quick aggregation.
@@ -234,7 +308,7 @@ For every run:
 
 ---
 
-## 9. Adding a New Model (Template)
+## 11. Adding a New Model (Template)
 
 When introducing another architecture:
 1. **Clone the pattern** from existing models (e.g., `simple_mlp.py`): import `har_dataset.py` helpers (`load_base_panel`, `prepare_har_dataset`, `feature_tensor`, `target_tensor`) plus `TrainConfig`/`train_regressor`.

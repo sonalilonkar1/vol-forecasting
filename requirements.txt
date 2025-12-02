@@ -12,3 +12,4 @@ pytorch-lightning
 matplotlib
 pyyaml
 tqdm
+xgboost
