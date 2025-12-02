@@ -34,7 +34,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-splits", nargs="+", choices=["train", "val", "test"],
                    default=["val", "test"])
     p.add_argument("--splits-config", type=Path, default=Path("configs/splits.yaml"))
-    p.add_argument("--out-dir", type=Path, default=Path("experiments/garch/preds"))
+    p.add_argument("--out-dir", type=Path, default=Path("experiments/preds"),
+                   help="Directory for prediction CSVs (default: experiments/preds)")
+    p.add_argument("--file-prefix", type=str, default="garch",
+                   help="Filename prefix so outputs look like <prefix>_h*.csv")
     p.add_argument("--min-train", type=int, default=252,
                    help="Minimum training observations per asset")
     p.add_argument("--refit-every", type=int, default=22,
@@ -223,7 +226,7 @@ def main():
             refit_every=args.refit_every,
         )
         
-        out_path = args.out_dir / f"h{H}.csv"
+        out_path = args.out_dir / f"{args.file_prefix}_h{H}.csv"
         preds.to_csv(out_path, index=False)
         counts = preds.groupby("split").size().to_dict()
         print(f"[garch] H={H}: wrote {len(preds):,} rows to {out_path} {counts}")
