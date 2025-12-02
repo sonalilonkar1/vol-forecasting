@@ -51,13 +51,18 @@ This playbook spells out how to exercise every forecasting model, what knobs to 
    python -m src.backtest.run --pred-path experiments/preds/<stem>_h5.csv
    python -m src.backtest.run --pred-path experiments/preds/<stem>_h22.csv
    ```
-4. **Capture metrics**: append the summary block printed by `src.backtest.run` to `experiments/results/metrics_log.md` (see next section) and store each CSV (`*_bt.csv`).
+4. **Capture metrics**: run `python scripts/log_backtest_metrics.py <path_to_bt_csv>` to append the summary block to `experiments/results/metrics_log.md` (created on first use) and archive each CSV (`*_bt.csv`).
+
+```bash
+python scripts/log_backtest_metrics.py experiments/results/har_h1_bt.csv \
+   --log-path experiments/results/metrics_log.md
+```
 
 ---
 
 ## 4. Logging results
 
-Create/maintain `experiments/results/metrics_log.md` with one table per horizon:
+Create/maintain `experiments/results/metrics_log.md` with one table per horizon (the file is generated automatically the first time you run `scripts/log_backtest_metrics.py`):
 
 ```
 ### Horizon 1
@@ -68,7 +73,35 @@ Create/maintain `experiments/results/metrics_log.md` with one table per horizon:
 | TFT hidden=256     | 0.118     | 0.185      | **0.02**        | 11.7%    | 1.34       | -10%   | 0.21     | 3.9             |
 ```
 
-Populate the error columns with the validation split of the prediction CSV. Use `scripts/dm_test.py` (or your notebook) to compute DM statistics between each candidate and the HAR baseline for the same horizon.
+Populate the error columns with the validation split of the prediction CSV. Use `python scripts/dm_test.py <har_file> <candidate_file> --loss mse_log --split val` (or your notebook) to compute DM statistics between each candidate and the HAR baseline for the same horizon. Store the resulting CSV under `experiments/results/dm_tests/` for traceability.
+
+### Statistical confidence helpers
+
+1. **Diebold–Mariano CLI** (`scripts/dm_test.py`)
+
+   ```bash
+   python scripts/dm_test.py \
+      experiments/preds/har_h1.csv \
+      experiments/preds/tft_h1.csv \
+      --loss mse_log --split val \
+      --out experiments/results/dm_tests/tft_vs_har_h1.csv
+   ```
+
+   - Supports `mse_log`, `mae_log`, and `qlike` losses.
+   - Use `--group-by split asset` to surface per-split/asset p-values.
+   - Adjust the Newey–West lag via `--max-lag` (default 5) if your horizon spacing changes.
+
+2. **Backtest KPI bootstrap** (`scripts/bootstrap_backtest_ci.py`)
+
+   ```bash
+   python scripts/bootstrap_backtest_ci.py experiments/results/har_h1_bt.csv \
+      --n-bootstrap 2000 --block-size 5 \
+      --out-dir experiments/results/bootstrap
+   ```
+
+   - Emits `{stem}_bootstrap_ci.csv` with percentile intervals for Sharpe, CAGR, drawdown, turnover, and cost.
+   - Increase `--block-size` for heavier serial correlation; bump `--n-bootstrap` for tighter intervals.
+   - All outputs live under `experiments/results/bootstrap/` for direct inclusion in the report appendix.
 
 ---
 
@@ -150,8 +183,8 @@ print(summary)
 - [ ] Neural baselines (MLP, GRU/LSTM) with at least two lookback lengths.
 - [ ] TFT runs with both 60-day and 90-day encoders.
 - [ ] Backtests for every prediction file (net performance + cost metrics logged).
-- [ ] DM tests versus HAR per horizon.
-- [ ] Bootstrap confidence intervals for net Sharpe (>= 1,000 draws) saved under `experiments/results/bootstrap/`.
+- [ ] DM tests versus HAR per horizon (via `scripts/dm_test.py`, saved under `experiments/results/dm_tests/`).
+- [ ] Bootstrap confidence intervals for net Sharpe (>= 1,000 draws) saved under `experiments/results/bootstrap/` using `scripts/bootstrap_backtest_ci.py`.
 - [ ] Summary narrative: which model is preferred, why, and under what conditions (aligns with proposal deliverables section).
 
 Following this document ensures that every model evaluation is reproducible, comparable, and ready for inclusion in the final report.
