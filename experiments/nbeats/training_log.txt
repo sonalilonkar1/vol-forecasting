@@ -1,0 +1,21 @@
+Training N-BEATS for horizon H=1, lookback=90...
+  Epoch 10/50, Loss: 0.425491
+  Epoch 20/50, Loss: 0.172357
+  Epoch 30/50, Loss: 0.115758
+  Epoch 40/50, Loss: 0.095267
+  Epoch 50/50, Loss: 0.076878
+[nbeats] H=1: wrote 5,283 rows to experiments/nbeats/preds/nbeats_h1.csv {'test': 3774, 'val': 1509}
+Training N-BEATS for horizon H=5, lookback=90...
+  Epoch 10/50, Loss: 0.344207
+  Epoch 20/50, Loss: 0.131199
+  Epoch 30/50, Loss: 0.080017
+  Epoch 40/50, Loss: 0.065665
+  Epoch 50/50, Loss: 0.053776
+[nbeats] H=5: wrote 5,283 rows to experiments/nbeats/preds/nbeats_h5.csv {'test': 3774, 'val': 1509}
+Training N-BEATS for horizon H=22, lookback=90...
+  Epoch 10/50, Loss: 0.266448
+  Epoch 20/50, Loss: 0.102937
+  Epoch 30/50, Loss: 0.077091
+  Epoch 40/50, Loss: 0.061994
+  Epoch 50/50, Loss: 0.070909
+[nbeats] H=22: wrote 5,283 rows to experiments/nbeats/preds/nbeats_h22.csv {'test': 3774, 'val': 1509}
