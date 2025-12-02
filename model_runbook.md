@@ -61,8 +61,8 @@ python -m src.models.garch \
 - `--file-prefix`: names outputs like `<prefix>_h{H}.csv` so reporting/backtests can differentiate models.
 
 **Result interpretation**
-- Outputs `h{H}.csv` with the standard schema (`date, asset, y_true_*, yhat_*, model, horizon, split`).
-- Pair each CSV with `src/backtest/run.py ... --pred-path experiments/garch/preds/h{H}.csv` to slot the baseline into allocators.
+- Outputs `<prefix>_h{H}.csv` with the standard schema (`date, asset, y_true_*, yhat_*, model, horizon, split`).
+- Pair each CSV with `src/backtest/run.py ... --pred-path experiments/preds/<prefix>_h{H}.csv` to slot the baseline into allocators.
 - Check logs for “Skipped X assets (<min_train)” warnings; increase history or lower `--min-train` as needed.
 
 ## 3. Feed-Forward Baseline (Simple MLP)
@@ -192,7 +192,7 @@ python -m src.models.nbeats \
 
 **Result notes**
 - Each horizon writes `<prefix>_h{H}.csv` with the shared schema so the report/backtest tooling works unchanged.
-- Combine with `src/backtest/run.py --pred-path experiments/nbeats/preds/h1.csv --allocator risk_parity --cost-bps 15` to benchmark economic value vs. TFT/HAR.
+- Combine with `src/backtest/run.py --pred-path experiments/preds/<prefix>_h1.csv --allocator risk_parity --cost-bps 15` to benchmark economic value vs. TFT/HAR.
 
 
 ## 7. Cost-Aware Backtest

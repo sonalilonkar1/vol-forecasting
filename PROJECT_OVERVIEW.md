@@ -146,7 +146,9 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
 3. **Train models** (examples)
    ```bash
    python -m src.models.har_rv --horizons 1 5 22 --eval-splits val test
+   python -m src.models.garch --horizons 1 5 22 --eval-splits val test --refit-every 22 --out-dir experiments/preds --file-prefix garch
    python -m src.models.simple_mlp --horizons 1 5 22 --eval-splits val test --hidden-dim 64
+   python -m src.models.nbeats --horizons 1 5 22 --lookback 90 --eval-splits val test --device cpu --out-dir experiments/preds --file-prefix nbeats
    python -m src.models.tft --device cuda:0 --loss qlike --horizons 1 5 22
    ```
 4. **Evaluate & summarize**
@@ -174,7 +176,7 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
 
 ## 7. Roadmap & Open Items
 
-- Add GARCH, N-BEATS, and Informer baselines referenced in `proposal.md`.
+- Add the Informer baseline referenced in `proposal.md` (GARCH and N-BEATS are now implemented with shared CLI contracts).
 - Extend TFT exports to all horizons and document interpretability tooling (attention/variable importance plots).
 - Stress-test the new risk-parity allocator with longer lookbacks, leverage caps, and decision-focused metrics from the proposal (extend beyond the current HAR H=1 experiment summarized in `experiments/results/{inv_vol,risk_parity}`).
 - Integrate Diebold–Mariano significance tests, regime-wise breakdowns, and walk-forward re-fit scripts.

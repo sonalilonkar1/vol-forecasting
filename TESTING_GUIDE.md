@@ -22,8 +22,10 @@ This playbook spells out how to exercise every forecasting model, what knobs to 
 | Model        | Key Flags                                  | Parameter Sweep                                                                 |
 |--------------|--------------------------------------------|----------------------------------------------------------------------------------|
 | HAR / HARX   | `--harx`, `--estimator`, `--ridge-alpha`   | Ridge α ∈ {0.1, 0.5, 1.0}; HARX on/off                                           |
+| GARCH(1,1)   | `--refit-every`, `--min-train`, `--file-prefix` | Refit cadence ∈ {5, 22, 66}; min-train ∈ {150, 252}; horizons ∈ {1, 5, 22}  |
 | Simple MLP   | `--hidden-dim`, `--num-layers`, `--dropout`| Hidden dim ∈ {32, 64, 128}; depth ∈ {1, 2}; dropout ∈ {0.0, 0.1}                 |
 | GRU / LSTM   | `--cell-type`, `--lookback`, `--hidden-dim`| Lookback ∈ {30, 45, 60}; hidden dim ∈ {64, 128}; cell ∈ {gru, lstm}              |
+| N-BEATS      | `--lookback`, `--hidden-dim`, `--num-stacks`, `--device` | Lookback ∈ {60, 90}; hidden dim ∈ {64, 128}; stacks ∈ {2, 3}; device ∈ {cpu, cuda:0} |
 | TFT          | `--lookback`, `--hidden-dim`, `--num-heads`| Lookback ∈ {60, 90}; hidden dim ∈ {128, 256}; heads ∈ {4, 8}; dropout ∈ {0.1,0.2}|
 
 > **Tip:** keep one hyperparameter sweep active at a time to isolate effects and limit GPU time.
@@ -150,3 +152,60 @@ print(summary)
 - [ ] Summary narrative: which model is preferred, why, and under what conditions (aligns with proposal deliverables section).
 
 Following this document ensures that every model evaluation is reproducible, comparable, and ready for inclusion in the final report.
+
+---
+
+## 9. Model-specific notes (new baselines)
+
+### GARCH(1,1)
+
+Run the classical volatility baseline with the shared output contract so downstream tooling sees `experiments/preds/garch_h*.csv`:
+
+```bash
+python -m src.models.garch \
+   --source data/tft_ready_dataset.csv \
+   --horizons 1 5 22 \
+   --eval-splits val test \
+   --splits-config configs/splits.yaml \
+   --min-train 252 \
+   --refit-every 22 \
+   --out-dir experiments/preds \
+   --file-prefix garch
+```
+
+Checklist:
+
+1. Confirm each `<prefix>_h{H}.csv` includes the `split` column before launching backtests.
+2. Use the batch runner (`--models garch`) to sweep allocator/cost assumptions alongside HAR/HARX.
+3. Note any “Skipped <asset>” warnings—reduce `--min-train` or widen the history if necessary.
+
+### N-BEATS
+
+CPU-friendly command (switch `--device cuda:0` only if your PyTorch build includes CUDA):
+
+```bash
+python -m src.models.nbeats \
+   --source data/tft_ready_dataset.csv \
+   --horizons 1 5 22 \
+   --lookback 90 \
+   --hidden-dim 128 \
+   --num-stacks 3 \
+   --num-blocks 2 \
+   --theta-dim 8 \
+   --dropout 0.1 \
+   --epochs 50 \
+   --batch-size 512 \
+   --lr 1e-3 \
+   --weight-decay 1e-4 \
+   --eval-splits val test \
+   --min-train 500 \
+   --device cpu \
+   --out-dir experiments/preds \
+   --file-prefix nbeats
+```
+
+Guidance:
+
+1. Verify the torch device before launching runs to avoid the “Torch not compiled with CUDA enabled” assertion.
+2. Because training is stochastic, log the random seed (`--seed`) in your experiment tracker when comparing sweeps.
+3. Backtests use the same `<prefix>_h{H}.csv` contract, so no special handling is required once the files land in `experiments/preds/`.
