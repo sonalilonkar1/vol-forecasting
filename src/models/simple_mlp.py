@@ -2,24 +2,21 @@
 from __future__ import annotations
 
 import argparse
-import math
-import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 
-from .har_rv import (
-    resolve_source,
-    load_feature_table,
-    pick_logvol_col,
-    load_splits_config,
-    compute_masks,
-    build_har_table,
+from .common.har_dataset import (
+    load_base_panel,
+    prepare_har_dataset,
+    feature_tensor,
+    target_tensor,
+    meta_from_mask,
 )
+from .common.train_loop import TrainConfig, predict, set_seed, train_regressor
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,13 +42,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
 class MLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, num_layers: int, dropout: float) -> None:
         super().__init__()
@@ -68,104 +58,55 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.body(x)
         return self.head(h).squeeze(-1)
-
-
-def make_tensor(frame: pd.DataFrame, device: torch.device) -> torch.Tensor:
-    arr = frame.to_numpy(dtype=np.float32)
-    return torch.from_numpy(arr).to(device)
-
-
-def fit_model(
-    X_train: torch.Tensor,
-    y_train: torch.Tensor,
-    hidden_dim: int,
-    num_layers: int,
-    dropout: float,
-    epochs: int,
-    batch_size: int,
-    lr: float,
-    weight_decay: float,
-) -> MLP:
-    dataset = TensorDataset(X_train, y_train)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
-    model = MLP(X_train.shape[1], hidden_dim, num_layers, dropout).to(X_train.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    loss_fn = nn.MSELoss()
-
-    model.train()
-    for _ in range(epochs):
-        for xb, yb in loader:
-            optimizer.zero_grad()
-            preds = model(xb)
-            loss = loss_fn(preds, yb)
-            loss.backward()
-            optimizer.step()
-    return model
-
-
-def predict(model: MLP, X: torch.Tensor) -> np.ndarray:
-    model.eval()
-    with torch.no_grad():
-        preds = model(X).detach().cpu().numpy()
-    return preds
-
-
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     device = torch.device(args.device)
 
-    df = load_feature_table(resolve_source(args.source))
-    logcol = pick_logvol_col(df)
-    cfg = load_splits_config(args.splits_config)
-    if cfg.get("assets"):
-        df = df[df["asset"].isin(cfg["assets"])].copy()
+    df, cfg, logcol = load_base_panel(args.source, args.splits_config)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     for horizon in args.horizons:
-        tab, feats = build_har_table(
+        dataset = prepare_har_dataset(
             df,
+            logcol,
+            cfg,
             horizon=horizon,
-            logcol=logcol,
-            target_mode="point",
             use_harx=args.harx,
         )
-        masks = compute_masks(tab["date"], cfg)
-        train_mask = masks["train"]
+        train_mask = dataset.masks["train"]
         if train_mask.sum() < args.min_train:
             raise ValueError(
                 f"Not enough training rows for horizon {horizon}. Have {int(train_mask.sum())}, need {args.min_train}."
             )
 
-        X_train = make_tensor(tab.loc[train_mask, feats], device)
-        y_train = torch.from_numpy(tab.loc[train_mask, "y_true_logrv"].to_numpy(dtype=np.float32)).to(device)
+        X_train = feature_tensor(dataset, train_mask, device)
+        y_train = target_tensor(dataset, train_mask, device)
 
-        model = fit_model(
-            X_train,
-            y_train,
-            hidden_dim=args.hidden_dim,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
+        model = MLP(X_train.shape[1], args.hidden_dim, args.num_layers, args.dropout).to(device)
+        config = TrainConfig(
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
+        model = train_regressor(model, X_train, y_train, config)
 
         outputs = []
         model_name = f"MLP({'HARX' if args.harx else 'HAR'})"
         for split in args.eval_splits:
-            mask = masks[split]
+            mask = dataset.masks[split]
             if not mask.any():
                 continue
-            X_split = make_tensor(tab.loc[mask, feats], device)
+            X_split = feature_tensor(dataset, mask, device)
             preds = predict(model, X_split)
+            meta = meta_from_mask(dataset, mask)
             part = pd.DataFrame(
                 {
-                    "date": tab.loc[mask, "date"].values,
-                    "asset": tab.loc[mask, "asset"].values,
-                    "y_true_logrv": tab.loc[mask, "y_true_logrv"].values,
-                    "y_true_rv": tab.loc[mask, "y_true_rv"].values,
+                    "date": meta["date"].values,
+                    "asset": meta["asset"].values,
+                    "y_true_logrv": meta["y_true_logrv"].values,
+                    "y_true_rv": meta["y_true_rv"].values,
                     "yhat_logrv": preds,
                 }
             )

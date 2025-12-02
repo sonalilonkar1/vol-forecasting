@@ -20,6 +20,23 @@ env/
 .vscode/
 .idea/
 
+# data & models (keep large/binary out of git)
+data/raw/
+data/processed/
+checkpoints/
+experiments/
+Thumbs.db
+
+#vscode settings
+.vscode/
+
+
+
+# project files
+DeepLearningProjectProposal.pdf
+proposal.md
+notes.md
+reports/other
 
 # OS files
 .DS_Store

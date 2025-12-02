@@ -54,6 +54,8 @@ def run_one(
     cost_bps=10,
     no_trade_pp=5,
     weight_cap=1.0,
+    engine_kwargs: dict | None = None,
+    name_suffix: str = "",
 ):
     preds = pd.read_csv(pred_csv, parse_dates=["date"])
     preds = normalize_preds(preds)
@@ -66,6 +68,7 @@ def run_one(
     else:
         use = preds.copy()
 
+    engine_kwargs = engine_kwargs or {}
     out = backtest(
         use,
         returns_df,
@@ -74,12 +77,17 @@ def run_one(
         no_trade_pp=no_trade_pp,
         return_col=return_col,
         weight_cap=weight_cap,
+        **engine_kwargs,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{pred_csv.stem}_bt.csv"
+    suffix = name_suffix or ""
+    out_name = f"{pred_csv.stem}{suffix}_bt.csv"
+    out_path = out_dir / out_name
     out.to_csv(out_path, index=False)
-    print(f"[ok] {pred_csv.name} → {out_path.name} ({len(out)} rows)")
+    print(
+        f"[ok] {pred_csv.name} (cost={cost_bps}bps{', suffix='+suffix if suffix else ''}) → {out_path.name} ({len(out)} rows)"
+    )
 
 def filter_prediction_files(
     files: Sequence[Path],
@@ -137,6 +145,24 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG_PATH,
         help="Portfolio config file (default: configs/backtest.yaml).",
     )
+    parser.add_argument(
+        "--cost-bps-grid",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Optional list of transaction-cost levels (bps). Each level runs a separate backtest per file.",
+    )
+    parser.add_argument(
+        "--allocator",
+        choices=["inverse_vol", "risk_parity"],
+        default=None,
+        help="Override allocator (default from config).",
+    )
+    parser.add_argument("--risk-parity-window", type=int, default=None)
+    parser.add_argument("--risk-parity-min-obs", type=int, default=None)
+    parser.add_argument("--rebalance-fraction", type=float, default=None)
+    parser.add_argument("--max-turnover", type=float, default=None)
+    parser.add_argument("--cov-shrink", type=float, default=None)
     return parser.parse_args()
 
 
@@ -170,22 +196,54 @@ def main():
     return_pref = cfg.get("returns_col", DEFAULT_RETURN_COL)
     returns_df, return_col = load_returns(returns_path, preferred_col=return_pref)
     target_vol = cfg.get("target_vol", 0.10)
-    cost_bps = cfg.get("cost_bps", 10)
+    default_cost = cfg.get("cost_bps", 10)
+    cost_grid = [default_cost]
+    if args.cost_bps_grid:
+        cost_grid = [float(x) for x in args.cost_bps_grid]
     no_trade_pp = cfg.get("no_trade_pp", 5)
     weight_cap = cfg.get("weight_cap", 1.0)
+    allocator = args.allocator if args.allocator is not None else cfg.get("allocator", "inverse_vol")
+    rp_window = (
+        args.risk_parity_window if args.risk_parity_window is not None else cfg.get("risk_parity_window", 60)
+    )
+    rp_min = (
+        args.risk_parity_min_obs
+        if args.risk_parity_min_obs is not None
+        else cfg.get("risk_parity_min_obs", 20)
+    )
+    rebalance_fraction = (
+        args.rebalance_fraction
+        if args.rebalance_fraction is not None
+        else cfg.get("rebalance_fraction", 1.0)
+    )
+    max_turnover = args.max_turnover if args.max_turnover is not None else cfg.get("max_turnover")
+    cov_shrink = args.cov_shrink if args.cov_shrink is not None else cfg.get("cov_shrink", 1e-6)
+
+    engine_kwargs = dict(
+        allocator=allocator,
+        risk_parity_window=rp_window,
+        risk_parity_min_obs=rp_min,
+        rebalance_fraction=rebalance_fraction,
+        max_turnover=max_turnover,
+        cov_shrink=cov_shrink,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in files:
-        run_one(
-            p,
-            out_dir,
-            returns_df,
-            return_col,
-            target_vol=target_vol,
-            cost_bps=cost_bps,
-            no_trade_pp=no_trade_pp,
-            weight_cap=weight_cap,
-        )
+        for cost in cost_grid:
+            suffix = f"_cost{str(cost).replace('.', 'p')}"
+            run_one(
+                p,
+                out_dir,
+                returns_df,
+                return_col,
+                target_vol=target_vol,
+                cost_bps=cost,
+                no_trade_pp=no_trade_pp,
+                weight_cap=weight_cap,
+                engine_kwargs=engine_kwargs,
+                name_suffix=suffix if len(cost_grid) > 1 else "",
+            )
 
 if __name__ == "__main__":
     main()

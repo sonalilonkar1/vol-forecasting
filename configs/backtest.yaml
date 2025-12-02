@@ -5,3 +5,9 @@ weight_cap: 0.5
 rebalance: daily
 returns_path: data/processed/returns.csv
 returns_col: ret_1d
+allocator: inverse_vol
+risk_parity_window: 60
+risk_parity_min_obs: 20
+rebalance_fraction: 1.0
+max_turnover: null
+cov_shrink: 1.0e-6

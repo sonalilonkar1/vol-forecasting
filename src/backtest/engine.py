@@ -5,9 +5,31 @@ import numpy as np
 import pandas as pd
 
 
-def inverse_vol_weights(sigmas):
+def inverse_vol_weights(sigmas: np.ndarray) -> np.ndarray:
     inv = 1.0 / np.clip(sigmas, 1e-8, None)
     return inv / np.sum(inv)
+
+
+def risk_parity_weights(cov: np.ndarray, tol: float = 1e-5, max_iter: int = 1000) -> np.ndarray:
+    n = cov.shape[0]
+    if n == 0:
+        raise ValueError("Covariance matrix must be non-empty for risk parity weights.")
+    w = np.ones(n, dtype=float) / n
+    target = np.ones(n, dtype=float) / n
+    for _ in range(max_iter):
+        marginal = cov @ w
+        risk_contrib = w * marginal
+        total = np.sum(risk_contrib)
+        if total <= 0:
+            break
+        frac = risk_contrib / total
+        if np.max(np.abs(frac - target)) < tol:
+            break
+        adjust = target / np.clip(frac, 1e-8, None)
+        w *= adjust
+        w = np.clip(w, 1e-8, None)
+        w /= np.sum(w)
+    return w
 
 
 def _prepare_returns(returns_df, assets, return_col):
@@ -35,6 +57,16 @@ def _prepare_returns(returns_df, assets, return_col):
     return panel
 
 
+def _rolling_cov(panel: pd.DataFrame, idx: int, window: int, min_obs: int) -> np.ndarray | None:
+    if window <= 0 or idx == 0:
+        return None
+    start = max(0, idx - window)
+    hist = panel.iloc[start:idx]
+    if len(hist) < max(min_obs, 2):
+        return None
+    return np.cov(hist.values, rowvar=False)
+
+
 def backtest(
     preds_df,
     returns_df,
@@ -43,6 +75,12 @@ def backtest(
     no_trade_pp=5,
     return_col="ret_1d",
     weight_cap=1.0,
+    allocator: str = "inverse_vol",
+    risk_parity_window: int = 60,
+    risk_parity_min_obs: int = 20,
+    rebalance_fraction: float = 1.0,
+    max_turnover: float | None = None,
+    cov_shrink: float = 1e-6,
 ):
     preds_df = preds_df.sort_values(["date", "asset"]).reset_index(drop=True)
     assets = preds_df["asset"].unique().tolist()
@@ -54,6 +92,12 @@ def backtest(
     missing_dates = [dt for dt in dates if return_panel.loc[dt].isna().all()]
     return_panel = return_panel.fillna(0.0)
 
+    window = max(int(risk_parity_window), 0)
+    min_obs = max(int(risk_parity_min_obs), 2)
+    use_rp = allocator.lower() == "risk_parity" and len(assets) > 1
+    max_turnover = None if max_turnover is None else float(max_turnover)
+    rebalance_fraction = float(np.clip(rebalance_fraction, 0.0, 1.0))
+
     band = no_trade_pp / 100.0
     cap = abs(weight_cap) if weight_cap is not None else None
     w_active = np.zeros(len(assets))
@@ -61,7 +105,7 @@ def backtest(
     last_turnover = 0.0
     results = []
 
-    for dt in dates:
+    for idx, dt in enumerate(dates):
         asset_returns = return_panel.loc[dt].reindex(assets).to_numpy(dtype=float)
         gross = float(np.dot(w_active, asset_returns))
         net = gross - pending_cost
@@ -86,17 +130,34 @@ def backtest(
             )
         )
 
-        w_raw = inverse_vol_weights(sigma_vec)
+        if use_rp:
+            cov = None
+            if window > 0 and idx > 0:
+                roll_cov = _rolling_cov(return_panel, idx, window, min_obs)
+                if roll_cov is not None and roll_cov.shape == (len(assets), len(assets)):
+                    cov = roll_cov + np.eye(len(assets)) * cov_shrink
+            if cov is not None and len(assets) >= 2:
+                w_raw = risk_parity_weights(cov)
+            else:
+                w_raw = inverse_vol_weights(sigma_vec)
+        else:
+            w_raw = inverse_vol_weights(sigma_vec)
         delta = w_raw - w_active
         w_candidate = np.where(np.abs(delta) >= band, w_raw, w_active)
 
         port_sig_est = float(np.sqrt(np.sum((w_candidate**2) * (sigma_vec**2))))
         scaler = (target_vol / port_sig_est) if port_sig_est > 1e-8 else 1.0
-        w_new = w_candidate * scaler
+        w_target = w_candidate * scaler
+        w_new = w_active + rebalance_fraction * (w_target - w_active)
         if cap is not None:
             w_new = np.clip(w_new, -cap, cap)
 
         last_turnover = 0.5 * np.abs(w_new - w_active).sum()
+        if max_turnover is not None and last_turnover > max_turnover and last_turnover > 0:
+            scale = max_turnover / last_turnover
+            w_new = w_active + scale * (w_new - w_active)
+            last_turnover = 0.5 * np.abs(w_new - w_active).sum()
+
         pending_cost = last_turnover * (cost_bps / 10000.0)
         w_active = w_new
 
