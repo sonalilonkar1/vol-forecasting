@@ -76,6 +76,8 @@ Each stage is scriptable so experiments can be reproduced via CLI, `make`, or au
 - `tft.py` – PyTorch Lightning implementation of a simplified Temporal Fusion Transformer:
   - Builds sliding-window datasets covering all requested horizons simultaneously.
   - Supports HAR vs HARX features, QLIKE vs MSE loss, GPU acceleration, and exports per-horizon CSVs (`tft_h{H}.csv`).
+- `gbt.py` – Gradient-boosted tree (XGBoost) baseline that mirrors the HAR CLI contract, auto-detects TFT-ready panels, and writes `gbt_xgb_h{H}.csv` per horizon.
+- `informer.py` – Informer-style transformer encoder that trains per horizon with configurable sequence length, attention heads, and early stopping, emitting `informer_h{H}.csv`.
 
 Every model writes the same schema: `date, asset, y_true_logrv, y_true_rv, yhat_logrv, yhat_rv, model, horizon, split` so downstream tooling stays uniform.
 
@@ -103,6 +105,9 @@ Every model writes the same schema: `date, asset, y_true_logrv, y_true_rv, yhat_
 - `mlp_*` – Simple MLP baseline outputs.
 - `gru_*`, `lstm_*` – Sequence model baselines.
 - `tft_h1.csv` – Pilot TFT run (extend to other horizons as we scale experiments).
+- `gbt_xgb_h*.csv` – Tree-based baseline exports aligning with HAR naming.
+- `gbt_sweeps/<run_id>/gbt_xgb_h*.csv` – Outputs from `scripts/run_gbt_sweep.py`, each subfolder corresponding to one hyperparameter combo with metadata captured in `sweep_summary.csv`.
+- `informer_h*.csv` – Informer sequence-model predictions.
 
 All files can be combined with `src/eval/report.py` or fed into backtests directly.
 
@@ -110,6 +115,7 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
 - `{model}_h{H}_bt.csv` – Time-series diagnostics per model/horizon combination (turnover, costs, gross/net returns, sigma estimates). Cost sweep runs append `_costXXp_bt.csv` suffixes.
 - `summary.csv` – Table of RMSE/QLIKE per model, horizon, split.
 - `bt_overview.csv` – Compressed view of final cumulative returns and average trading frictions across every model/horizon/cost scenario.
+- `allocator_summary.csv` – Auto-generated manifest from `src/backtest.run_batch` whenever multiple allocators/cost levels are run in one command (columns: allocator, cost, prediction file, output CSV path).
 - `inv_vol/`, `risk_parity/` – Sub-folders that capture allocator-specific cost sweeps (e.g., HAR H=1 at 5/10/20 bps). Use these as templates for future allocator studies, and summarize them quickly with a short pandas snippet:
 
    ```python
@@ -148,7 +154,10 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
    python -m src.models.har_rv --horizons 1 5 22 --eval-splits val test
    python -m src.models.garch --horizons 1 5 22 --eval-splits val test --refit-every 22 --out-dir experiments/preds --file-prefix garch
    python -m src.models.simple_mlp --horizons 1 5 22 --eval-splits val test --hidden-dim 64
+   python src/models/gbt.py --horizons 1 5 22 --eval-splits val test --out-dir experiments/preds
    python -m src.models.nbeats --horizons 1 5 22 --lookback 90 --eval-splits val test --device cpu --out-dir experiments/preds --file-prefix nbeats
+   python src/models/informer.py --horizons 1 5 22 --seq-len 64 --max-epochs 50 --eval-splits val test --out-dir experiments/preds
+   PYTHONPATH=$PWD python scripts/run_gbt_sweep.py --n-estimators 1000 2000 --learning-rates 0.02 0.03 --max-depths 4 5 --out-dir experiments/preds/gbt_sweeps
    python -m src.models.tft --device cuda:0 --loss qlike --horizons 1 5 22
    ```
 4. **Evaluate & summarize**
@@ -160,15 +169,13 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
    python -m src.backtest.run --horizon 1
    python -m src.backtest.run_batch --models har mlp --horizons 1 5 22
 
-   # Allocator + cost sensitivity example (writes into sub-folders below experiments/results/)
+   # Allocator + cost sensitivity study (one command, auto summary)
    python -m src.backtest.run_batch --models har --horizons 1 \
-      --allocator inverse_vol --cost-bps-grid 5 10 20 \
-      --out-dir experiments/results/inv_vol
-
-   python -m src.backtest.run_batch --models har --horizons 1 \
-      --allocator risk_parity --risk-parity-window 90 --risk-parity-min-obs 30 \
-      --rebalance-fraction 0.5 --cost-bps-grid 5 10 20 \
-      --out-dir experiments/results/risk_parity
+      --allocators inverse_vol risk_parity \
+      --cost-bps-grid 5 10 20 \
+      --risk-parity-window 90 --risk-parity-min-obs 30 \
+      --rebalance-fraction 0.5 \
+      --out-dir experiments/results/allocators
    ```
 6. **Inspect results** – Explore `experiments/preds/`, `experiments/results/summary.csv`, and the *_bt.csv files for performance diagnostics.
 
@@ -176,7 +183,8 @@ All files can be combined with `src/eval/report.py` or fed into backtests direct
 
 ## 7. Roadmap & Open Items
 
-- Add the Informer baseline referenced in `proposal.md` (GARCH and N-BEATS are now implemented with shared CLI contracts).
+- Automate gradient-boosted-tree sweeps (grid over depth/eta/trees) and surface feature-importance plots next to HAR comparisons.
+- Harden the Informer training story (longer horizons, interpretability plots) and capture GPU vs CPU timing data.
 - Extend TFT exports to all horizons and document interpretability tooling (attention/variable importance plots).
 - Stress-test the new risk-parity allocator with longer lookbacks, leverage caps, and decision-focused metrics from the proposal (extend beyond the current HAR H=1 experiment summarized in `experiments/results/{inv_vol,risk_parity}`).
 - Integrate Diebold–Mariano significance tests, regime-wise breakdowns, and walk-forward re-fit scripts.
