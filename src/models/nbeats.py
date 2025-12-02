@@ -29,7 +29,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-splits", nargs="+", choices=["train", "val", "test"],
                    default=["val", "test"])
     p.add_argument("--splits-config", type=Path, default=Path("configs/splits.yaml"))
-    p.add_argument("--out-dir", type=Path, default=Path("experiments/nbeats/preds"))
+    p.add_argument("--out-dir", type=Path, default=Path("experiments/preds"),
+                   help="Directory for prediction CSVs (default: experiments/preds)")
+    p.add_argument("--file-prefix", type=str, default="nbeats",
+                   help="Filename prefix so outputs look like <prefix>_h*.csv")
     p.add_argument("--lookback", type=int, default=90,
                    help="Lookback window size L (60, 90, or 180)")
     p.add_argument("--num-stacks", type=int, default=2,
@@ -355,7 +358,7 @@ def main():
         pred_df = pd.concat(outputs, ignore_index=True)
         pred_df = pred_df.sort_values(["date", "asset"]).reset_index(drop=True)
         
-        out_path = args.out_dir / f"h{horizon}.csv"
+        out_path = args.out_dir / f"{args.file_prefix}_h{horizon}.csv"
         pred_df.to_csv(out_path, index=False)
         counts = pred_df.groupby("split").size().to_dict()
         print(f"[nbeats] H={horizon}: wrote {len(pred_df):,} rows to {out_path} {counts}")

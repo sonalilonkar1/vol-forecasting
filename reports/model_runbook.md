@@ -35,11 +35,37 @@ python -m src.models.har_rv \
 
 **Outputs & metrics**
 - CSV: `experiments/preds/har*_h{H}.csv` (columns `date, asset, yhat_rv, yhat_logrv, split`).
-- Backtest with the generic command (section 6) to capture Sharpe, turnover, and cost drag.
+- Backtest with the generic command (section 7) to capture Sharpe, turnover, and cost drag.
 
 ---
 
-## 2. Feed-Forward Baseline (Simple MLP)
+## 2. GARCH(1,1) Baseline
+
+**Command template**
+```bash
+python -m src.models.garch \
+  --source data/tft_ready_dataset.csv \
+  --horizons 1 5 22 \
+  --eval-splits val test \
+  --splits-config configs/splits.yaml \
+  --min-train 252 \
+  --refit-every 22 \
+  --out-dir experiments/preds \
+  --file-prefix garch
+```
+
+**Parameter meaning**
+- `--min-train`: per-asset minimum observations before the first fit (keep ≥ 1 year to avoid unstable coefficients).
+- `--refit-every`: rolling refit cadence in trading days; align with weekly (5), monthly (22), or quarterly (66) refresh.
+- `--out-dir`: defaults to `experiments/preds`; change only when you explicitly want a scratch folder.
+- `--file-prefix`: names outputs like `<prefix>_h{H}.csv` so reporting/backtests can differentiate models.
+
+**Result interpretation**
+- Outputs `h{H}.csv` with the standard schema (`date, asset, y_true_*, yhat_*, model, horizon, split`).
+- Pair each CSV with `src/backtest/run.py ... --pred-path experiments/garch/preds/h{H}.csv` to slot the baseline into allocators.
+- Check logs for “Skipped X assets (<min_train)” warnings; increase history or lower `--min-train` as needed.
+
+## 3. Feed-Forward Baseline (Simple MLP)
 
 **Command (dry-run example)**
 ```bash
@@ -69,7 +95,7 @@ python -m src.models.simple_mlp \
 
 ---
 
-## 3. Sequence Model (GRU/LSTM)
+## 4. Sequence Model (GRU/LSTM)
 
 **Command (GRU dry-run)**
 ```bash
@@ -99,7 +125,7 @@ python -m src.models.simple_rnn \
 
 ---
 
-## 4. Temporal Fusion Transformer (TFT)
+## 5. Temporal Fusion Transformer (TFT)
 
 **Command (CPU-friendly dry-run)**
 ```bash
@@ -131,35 +157,45 @@ python -m src.models.tft \
 
 ---
 
-## 5. N-BEATS
+## 6. N-BEATS
+
+> Tip: when pasting multi-line commands in zsh, end each line with `\` to avoid the shell interpreting `--flags` as separate commands.
 
 **Command (baseline run)**
 ```bash
 python -m src.models.nbeats \
   --source data/tft_ready_dataset.csv \
   --horizons 1 5 22 \
-  --width 256 \
-  --depth 4 \
-  --num-blocks 3 \
+  --lookback 90 \
+  --hidden-dim 128 \
+  --num-stacks 3 \
+  --num-blocks 2 \
+  --theta-dim 8 \
+  --dropout 0.1 \
   --epochs 50 \
   --batch-size 512 \
   --lr 1e-3 \
   --weight-decay 1e-4 \
-  --target-mode point \
-  --out-dir experiments/preds/
+  --eval-splits val test \
+  --min-train 500 \
+  --device cuda:0 \
+  --out-dir experiments/preds \
+  --file-prefix nbeats
 ```
 
 **Parameter meaning**
-- `--width`, `--depth`: control block capacity; higher widths fit complex patterns but may need stronger weight decay.
-- `--num-blocks`: more residual stacks improve accuracy but extend training time.
-- `--target-mode`: `point` forecasts log-RV at t+H; `avg` would use rolling averages if we experiment with smoother targets.
+- `--lookback`: sliding window length (truncated when too few rows remain per asset). 60/90/180 are good sweep anchors.
+- `--hidden-dim`, `--num-stacks`, `--num-blocks`, `--theta-dim`: map to the original width/depth configuration; scale cautiously to keep training under an hour.
+- `--min-train`: ensures enough normalized sequences before fitting; lower only when backtests need short histories.
+- `--device`: `cpu` works for smoke tests; switch to `cuda:<id>` for full runs.
+- `--out-dir` / `--file-prefix`: defaults drop straight into `experiments/preds`; change the prefix when running simultaneous sweeps to avoid overwriting files.
 
 **Result notes**
-- Compare against TFT to see how fully connected residual stacks fare without attention; in practice N-BEATS offers a competitive mid-tier baseline.
+- Each horizon writes `<prefix>_h{H}.csv` with the shared schema so the report/backtest tooling works unchanged.
+- Combine with `src/backtest/run.py --pred-path experiments/nbeats/preds/h1.csv --allocator risk_parity --cost-bps 15` to benchmark economic value vs. TFT/HAR.
 
----
 
-## 6. Cost-Aware Backtest
+## 7. Cost-Aware Backtest
 
 **Command template**
 ```bash
@@ -185,7 +221,7 @@ python src/backtest/run.py \
 
 ---
 
-## 7. Reporting Metrics & Analysis
+## 8. Reporting Metrics & Analysis
 
 For every run:
 1. **Forecast metrics**: Compute RMSE, RMSPE, QLIKE on validation/test splits. Scripts forthcoming; meanwhile, load the CSVs into notebooks for quick aggregation.
@@ -198,7 +234,7 @@ For every run:
 
 ---
 
-## 8. Adding a New Model (Template)
+## 9. Adding a New Model (Template)
 
 When introducing another architecture:
 1. **Clone the pattern** from existing models (e.g., `simple_mlp.py`): import `har_dataset.py` helpers (`load_base_panel`, `prepare_har_dataset`, `feature_tensor`, `target_tensor`) plus `TrainConfig`/`train_regressor`.
