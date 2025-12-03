@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--horizons",
         type=int,
         nargs="+",
-        default=[1],
+        default=[1, 5, 22],
         help="Forecast horizons (e.g., 1 5 22). Default: [1]",
     )
     p.add_argument(
