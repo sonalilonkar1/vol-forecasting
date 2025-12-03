@@ -20,9 +20,8 @@ DEFAULT_TFT_PARTS = [
 ]
 DEFAULT_FEATURES = Path("data/processed/features.parquet")
 
+
 # CLI argument parsing
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         "Gradient-Boosted Trees (XGBoost) baseline with strict t-1 features and YAML splits"
@@ -40,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         "--horizons",
         type=int,
         nargs="+",
-        default=[1],
+        default=[1, 5, 22],
         help="Forecast horizons (e.g., 1 5 22). Default: 1",
     )
     p.add_argument(
@@ -63,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         help="Directory where prediction CSVs will be written",
     )
 
-    # XGBoost hyperparameters (defaults mirror the notebook)
+    # XGBoost hyperparameters
     p.add_argument("--n-estimators", type=int, default=2000,
                    help="Max number of boosting rounds")
     p.add_argument("--learning-rate", type=float, default=0.03,
@@ -128,8 +127,8 @@ def load_feature_table(paths: Sequence[Path]) -> pd.DataFrame:
 
     df = (
         df.sort_values(["asset", "date"])
-        .drop_duplicates(["asset", "date"])
-        .reset_index(drop=True)
+          .drop_duplicates(["asset", "date"])
+          .reset_index(drop=True)
     )
     return df
 
@@ -172,16 +171,35 @@ def compute_masks(dates: pd.Series, cfg: dict) -> Dict[str, pd.Series]:
 
     m = {
         "train": (dates >= tr_s) & (dates <= tr_eff_end),
-        "val": (dates >= va_s) & (dates <= va_e),
-        "test": (dates >= te_s) & (dates <= te_e),
+        "val":   (dates >= va_s) & (dates <= va_e),
+        "test":  (dates >= te_s) & (dates <= te_e),
     }
     return {k: v.fillna(False) for k, v in m.items()}
 
 
-def build_gbt_table(df: pd.DataFrame, horizon: int) -> tuple[pd.DataFrame, list[str], str]:
+def pick_logvol_col(df: pd.DataFrame) -> str:
+    if "logvol_t" in df.columns:
+        return "logvol_t"
+    if "log_rv" in df.columns:
+        return "log_rv"
+    raise ValueError(
+        "Need 'logvol_t' (TFT-ready) or 'log_rv' (builder) in feature table")
+
+
+def build_gbt_table(
+    df: pd.DataFrame,
+    horizon: int,
+) -> tuple[pd.DataFrame, list[str], str]:
     """
     Prepare a table for GBT regression at a given horizon.
-    Uses the TFT-ready targets: target_logvol_t+H.
+
+    IMPORTANT: to match HAR's composition (e.g. {'val': 1509, 'test': 3774} for H=1),
+    we mirror the HAR RV row filtering:
+      - require target_logvol_t+H to be non-NaN
+      - require HAR regressors har_d, har_w, har_m to be non-NaN
+
+    We don't *have* to use har_d/har_w/har_m as features, but it's fine (and usually helpful)
+    to include them.
     """
     target_col = f"target_logvol_t+{horizon}"
     if target_col not in df.columns:
@@ -190,17 +208,29 @@ def build_gbt_table(df: pd.DataFrame, horizon: int) -> tuple[pd.DataFrame, list[
 
     tab = df.copy()
 
-    # Exclude date, identifier, and all target columns from features
+    # Build HAR-style regressors on the same log-vol column used in har_rv.py
+    logcol = pick_logvol_col(tab)
+    grp = tab.groupby("asset")[logcol]
+    tab["har_d"] = grp.shift(1)
+    tab["har_w"] = grp.transform(lambda s: s.shift(
+        1).rolling(5,  min_periods=5).mean())
+    tab["har_m"] = grp.transform(lambda s: s.shift(
+        1).rolling(22, min_periods=22).mean())
+
+    # HAR-style row requirement: all of these must be defined
+    required = [target_col, "har_d", "har_w", "har_m"]
+    tab = tab.dropna(subset=required).reset_index(drop=True)
+
+    # Exclude ID + all targets from feature list
     exclude = {"date", "asset", "ticker"}
     for h in (1, 5, 22):
         col = f"target_logvol_t+{h}"
         if col in tab.columns:
             exclude.add(col)
 
+    # Keep *all* remaining features (including har_d/w/m), but you could
+    # drop them here if you wanted a "pure GBT on TFT features" baseline.
     features = [c for c in tab.columns if c not in exclude]
-
-    # Drop rows without target
-    tab = tab.dropna(subset=[target_col]).reset_index(drop=True)
 
     return tab, features, target_col
 
@@ -210,7 +240,6 @@ def _model_label() -> str:
     return "GBT-XGB"
 
 
-# Fit / predict using XGBoost (single pooled model)
 def fit_gbt_xgb(
     tab: pd.DataFrame,
     features: list[str],
@@ -276,7 +305,6 @@ def fit_gbt_xgb(
 
     if has_val:
         dval = xgb.DMatrix(X_val_s, label=y_val)
-        watchlist.append(("val", dval))
         evals = [(dtrain, "train"), (dval, "val")]
         model = xgb.train(
             params=params,
@@ -329,13 +357,11 @@ def fit_gbt_xgb(
     if not rows:
         raise ValueError(
             "No predictions produced; check eval-splits or feature coverage")
-
-    preds = (
+    return (
         pd.concat(rows, ignore_index=True)
-        .sort_values(["date", "asset"])
-        .reset_index(drop=True)
+          .sort_values(["date", "asset"])
+          .reset_index(drop=True)
     )
-    return preds
 
 
 def main():
@@ -351,10 +377,14 @@ def main():
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    masks = compute_masks(df["date"], cfg)
+    full_masks = compute_masks(df["date"], cfg)
 
     for H in args.horizons:
         tab, feats, target_col = build_gbt_table(df, horizon=H)
+
+        # Reindex masks on the horizon-specific table (same idea as informer_rv)
+        masks = {k: full_masks[k].reindex(tab.index).fillna(False)
+                 for k in full_masks.keys()}
 
         preds = fit_gbt_xgb(
             tab=tab,
@@ -372,9 +402,7 @@ def main():
             seed=args.seed,
         )
 
-        # Add horizon column and write to disk
         preds["horizon"] = H
-        # Reorder columns to exactly match har_h1.csv layout
         preds = preds[
             [
                 "date",
