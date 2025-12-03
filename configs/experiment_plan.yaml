@@ -59,17 +59,17 @@ experiments:
     grid:
       - name: hidden_dim
         flag: --hidden-dim
-        values: [64, 128, 256]
+        values: [128]
       - name: num_layers
         flag: --num-layers
-        values: [2, 3]
+        values: [2]
       - name: dropout
         flag: --dropout
-        values: [0.0, 0.2]
+        values: [0.1]
       - name: harx
         flag: --harx
         kind: flag
-        values: [false, true]
+        values: [true]
 
   - name: har_baselines
     command:
@@ -106,7 +106,7 @@ experiments:
       --eval-splits:
         - test
       --splits-config: configs/splits.yaml
-      --early-stopping: 50
+      --early-stopping: 30
       --seed: 42
       --subsample: 0.8
       --colsample-bytree: 0.8
@@ -114,13 +114,13 @@ experiments:
     grid:
       - name: n_estimators
         flag: --n-estimators
-        values: [1000, 2000]
+        values: [600, 900]
       - name: learning_rate
         flag: --learning-rate
-        values: [0.02, 0.03]
+        values: [0.03]
       - name: max_depth
         flag: --max-depth
-        values: [4, 5]
+        values: [4]
 
   - name: garch_baselines
     command:
@@ -136,10 +136,10 @@ experiments:
     grid:
       - name: min_train
         flag: --min-train
-        values: [150, 252]
+        values: [252]
       - name: refit_every
         flag: --refit-every
-        values: [22, 66]
+        values: [44]
 
   - name: nbeats_sweeps
     command:
@@ -157,13 +157,13 @@ experiments:
     grid:
       - name: lookback
         flag: --lookback
-        values: [60, 90]
+        values: [60]
       - name: hidden_dim
         flag: --hidden-dim
-        values: [64, 128]
+        values: [128]
       - name: num_stacks
         flag: --num-stacks
-        values: [2, 3]
+        values: [2]
 
   - name: informer_runs
     command:
@@ -181,13 +181,13 @@ experiments:
     grid:
       - name: seq_len
         flag: --seq-len
-        values: [32, 64]
+        values: [64]
       - name: d_ff
         flag: --d-ff
-        values: [192, 256]
+        values: [256]
       - name: n_heads
         flag: --n-heads
-        values: [2, 4]
+        values: [4]
 
   - name: tft_multihorizon
     command:
@@ -208,13 +208,218 @@ experiments:
       - name: harx
         flag: --harx
         kind: flag
-        values: [false, true]
+        values: [true]
       - name: lookback
         flag: --lookback
-        values: [60, 90]
+        values: [60]
       - name: hidden_dim
         flag: --hidden-dim
-        values: [128, 192]
+        values: [192]
       - name: dropout
         flag: --dropout
-        values: [0.1, 0.2]
+        values: [0.1]
+
+  # Lightweight experiment set for quick sanity comparisons
+  - name: seq_rnn_quick
+    command:
+      - python
+      - -m
+      - src.models.simple_rnn
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --device: cpu
+      --epochs: 15
+      --batch-size: 128
+      --cell-type: gru
+      --lookback: 30
+      --hidden-dim: 64
+      --dropout: 0.1
+      --min-train: 400
+    grid: []
+
+  - name: nbeats_quick
+    command:
+      - python
+      - -m
+      - src.models.nbeats
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --file-prefix: nbeats_quick
+      --epochs: 20
+      --batch-size: 128
+      --device: cpu
+      --lookback: 60
+      --hidden-dim: 64
+      --num-stacks: 2
+      --num-blocks: 2
+    grid: []
+
+  - name: har_quick
+    command:
+      - python
+      - -m
+      - src.models.har_rv
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --min-train: 200
+      --harx: false
+      --estimator: ols
+    grid: []
+
+  - name: gbt_quick
+    command:
+      - python
+      - -m
+      - src.models.gbt
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --early-stopping: 15
+      --seed: 42
+      --subsample: 0.8
+      --colsample-bytree: 0.8
+      --lambda_: 1.0
+      --n-estimators: 300
+      --learning-rate: 0.05
+      --max-depth: 3
+    grid: []
+
+  - name: garch_quick
+    command:
+      - python
+      - -m
+      - src.models.garch
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --file-prefix: garch_quick
+      --min-train: 252
+      --refit-every: 44
+    grid: []
+
+  - name: mlp_quick
+    command:
+      - python
+      - -m
+      - src.models.simple_mlp
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --epochs: 20
+      --batch-size: 256
+      --hidden-dim: 128
+      --num-layers: 2
+      --dropout: 0.1
+      --harx: false
+      --min-train: 400
+    grid: []
+
+  - name: tft_quick
+    command:
+      - python
+      - -m
+      - src.models.tft
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --harx: false
+      --lookback: 45
+      --hidden-dim: 96
+      --lstm-layers: 1
+      --dropout: 0.1
+      --num-heads: 2
+      --epochs: 20
+      --batch-size: 96
+      --loss: qlike
+      --grad-clip: 1.0
+      --device: cpu
+    grid: []
+
+  - name: informer_quick
+    command:
+      - python
+      - -m
+      - src.models.informer
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --seq-len: 48
+      --batch-size: 64
+      --max-epochs: 20
+      --patience: 5
+      --lr: 1e-3
+      --weight-decay: 1e-4
+      --d-ff: 192
+      --n-layers: 2
+      --n-heads: 2
+      --dropout: 0.1
+    grid: []
+
+  - name: gbt_panel_quick
+    command:
+      - python
+      - -m
+      - src.models.gbt_panel
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --n-estimators: 300
+      --learning-rate: 0.05
+      --max-depth: 3
+      --subsample: 0.8
+      --colsample-bytree: 0.8
+      --lambda_: 1.0
+      --early-stopping: 15
+      --seed: 42
+    grid: []
+
+  - name: informer_panel_quick
+    command:
+      - python
+      - -m
+      - src.models.informer_panel
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - val
+        - test
+      --splits-config: configs/splits.yaml
+      --seq-len: 48
+      --batch-size: 64
+      --max-epochs: 20
+      --patience: 5
+      --lr: 1e-3
+      --weight-decay: 1e-4
+      --d-ff: 192
+      --n-layers: 2
+      --n-heads: 2
+      --dropout: 0.1
+    grid: []
