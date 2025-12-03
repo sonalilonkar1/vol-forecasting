@@ -25,6 +25,8 @@ data/raw/
 data/processed/
 checkpoints/
 experiments/
+reports/Plots/
+
 Thumbs.db
 
 #vscode settings
