@@ -1,0 +1,220 @@
+pred_dir: experiments/preds
+archive_dir: experiments/preds/runs
+results_dir: experiments/results
+
+backtest:
+  command:
+    - python
+    - -m
+    - src.backtest.run
+  args:
+    --config: configs/backtest.yaml
+    --returns-path: data/processed/returns.csv
+    --out-dir: experiments/results
+
+experiments:
+  - name: seq_rnn
+    command:
+      - python
+      - -m
+      - src.models.simple_rnn
+    horizons: [1, 5, 22]
+    run_prefix_template: "{name}_{slug}"
+    args:
+      --eval-splits:
+        - test
+      --device: cpu
+      --epochs: 75
+      --batch-size: 256
+      --min-train: 800
+    grid:
+      - name: cell_type
+        flag: --cell-type
+        values: ["gru", "lstm"]
+      - name: lookback
+        flag: --lookback
+        values: [30, 60]
+      - name: hidden_dim
+        flag: --hidden-dim
+        values: [64, 128]
+      - name: dropout
+        flag: --dropout
+        values: [0.0, 0.1]
+      - name: harx
+        flag: --harx
+        kind: flag
+        values: [false, true]
+
+  - name: mlp_grid
+    command:
+      - python
+      - -m
+      - src.models.simple_mlp
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --epochs: 60
+      --batch-size: 512
+    grid:
+      - name: hidden_dim
+        flag: --hidden-dim
+        values: [64, 128, 256]
+      - name: num_layers
+        flag: --num-layers
+        values: [2, 3]
+      - name: dropout
+        flag: --dropout
+        values: [0.0, 0.2]
+      - name: harx
+        flag: --harx
+        kind: flag
+        values: [false, true]
+
+  - name: har_baselines
+    command:
+      - python
+      - -m
+      - src.models.har_rv
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --splits-config: configs/splits.yaml
+      --min-train: 300
+    grid:
+      - name: harx
+        flag: --harx
+        kind: flag
+        values: [false, true]
+      - name: estimator
+        flag: --estimator
+        values: ["ols", "ridge"]
+      - name: ridge_alpha
+        flag: --ridge-alpha
+        values: [0.25, 0.75, 1.5]
+        only_when:
+          estimator: ridge
+
+  - name: gbt_baselines
+    command:
+      - python
+      - -m
+      - src.models.gbt
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --splits-config: configs/splits.yaml
+      --early-stopping: 50
+      --seed: 42
+      --subsample: 0.8
+      --colsample-bytree: 0.8
+      --lambda_: 1.0
+    grid:
+      - name: n_estimators
+        flag: --n-estimators
+        values: [1000, 2000]
+      - name: learning_rate
+        flag: --learning-rate
+        values: [0.02, 0.03]
+      - name: max_depth
+        flag: --max-depth
+        values: [4, 5]
+
+  - name: garch_baselines
+    command:
+      - python
+      - -m
+      - src.models.garch
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --splits-config: configs/splits.yaml
+      --file-prefix: garch
+    grid:
+      - name: min_train
+        flag: --min-train
+        values: [150, 252]
+      - name: refit_every
+        flag: --refit-every
+        values: [22, 66]
+
+  - name: nbeats_sweeps
+    command:
+      - python
+      - -m
+      - src.models.nbeats
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --file-prefix: nbeats
+      --epochs: 50
+      --batch-size: 256
+      --device: cpu
+    grid:
+      - name: lookback
+        flag: --lookback
+        values: [60, 90]
+      - name: hidden_dim
+        flag: --hidden-dim
+        values: [64, 128]
+      - name: num_stacks
+        flag: --num-stacks
+        values: [2, 3]
+
+  - name: informer_runs
+    command:
+      - python
+      - -m
+      - src.models.informer
+    horizons: [1, 5, 22]
+    args:
+      --eval-splits:
+        - test
+      --splits-config: configs/splits.yaml
+      --batch-size: 64
+      --max-epochs: 50
+      --patience: 8
+    grid:
+      - name: seq_len
+        flag: --seq-len
+        values: [32, 64]
+      - name: d_ff
+        flag: --d-ff
+        values: [192, 256]
+      - name: n_heads
+        flag: --n-heads
+        values: [2, 4]
+
+  - name: tft_multihorizon
+    command:
+      - python
+      - -m
+      - src.models.tft
+    horizons: [1, 5, 22]
+    run_prefix_template: "{name}_{slug}"
+    args:
+      --eval-splits:
+        - test
+      --device: cpu
+      --epochs: 40
+      --batch-size: 128
+      --grad-clip: 1.0
+      --loss: qlike
+    grid:
+      - name: harx
+        flag: --harx
+        kind: flag
+        values: [false, true]
+      - name: lookback
+        flag: --lookback
+        values: [60, 90]
+      - name: hidden_dim
+        flag: --hidden-dim
+        values: [128, 192]
+      - name: dropout
+        flag: --dropout
+        values: [0.1, 0.2]

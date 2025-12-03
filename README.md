@@ -397,6 +397,17 @@ Risk parity trades more (≈20× turnover) but still delivers higher after-cost 
 
 ### Automation helpers
 
+- **Experiment/backtest orchestrator:** `scripts/run_experiment_batch.py` reads `configs/experiment_plan.yaml`, expands the defined hyperparameter grids, launches `src/models/...` trainers, renames each freshly written `experiments/preds/*.csv`, and immediately runs the matching backtests. It also records every `(experiment, run, horizon, prediction_path, backtest_path)` pair in `experiments/results/automation_summary.csv`. Preview the plan with:
+
+	```bash
+	PYTHONPATH=$PWD python scripts/run_experiment_batch.py \
+		--config configs/experiment_plan.yaml \
+		--experiments seq_rnn mlp_grid \
+		--dry-run
+	```
+
+	The default plan ships with three experiments (`seq_rnn`, `mlp_grid`, `har_baselines`). Each entry defines `command`, constant `args`, optional `run_prefix_template`, `horizons`, and a `grid` that translates to CLI flags (supports scalar values, repeated list args via `kind: multi`, and boolean switches via `kind: flag`). Grid dependencies should appear in order—e.g., the `ridge_alpha` block comes **after** the `estimator` block so its `only_when: {estimator: ridge}` guard is resolvable. Customize or add blocks as needed to mirror your proposal sweeps.
+
 - **GBT sweeps:** `scripts/run_gbt_sweep.py` fans out hyperparameter grids for `src/models/gbt.py`, dropping each run into `experiments/preds/gbt_sweeps/<run_id>` and writing `sweep_summary.csv` with the hyperparameters, runtime, and produced files. Example:
 
 	```bash
