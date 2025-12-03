@@ -11,7 +11,7 @@ This playbook spells out how to exercise every forecasting model, what knobs to 
 
 ## 1. Pre-run checklist
 
-- Environment: activate `vol-forecasting` conda env and install `requirements.txt` (Lightning, torch, statsmodels, etc.).
+- Environment: activate `vol-forecasting` conda env (or your python env e.g. .venv) and install `requirements.txt` (Lightning, torch, statsmodels, etc.).
 - Data: ensure `data/tft_ready_dataset.csv` (or *_train/val/test) and `data/processed/returns.csv` exist. These now come from Yahoo Finance adjusted prices/returns because the Oxford–Man realized-vol library was discontinued (see `src/data/fetch_etf_prices.py` + `src/data/make_rv_from_daily.py`). Regenerate features via `python -m src.features.build` if the raw panel changed.
 - Configs: confirm `configs/splits.yaml` and `configs/backtest.yaml` reflect the proposal’s train/val/test windows, embargo days, target vol, and cost assumptions.
 
@@ -57,6 +57,21 @@ This playbook spells out how to exercise every forecasting model, what knobs to 
 python scripts/log_backtest_metrics.py experiments/results/har_h1_bt.csv \
    --log-path experiments/results/metrics_log.md
 ```
+
+### Automated alternative
+
+When the full sweep becomes repetitive, seed `configs/experiment_plan.yaml` with the desired experiments and launch everything (train → prediction capture → backtest) in one command:
+
+```bash
+PYTHONPATH=$PWD python scripts/run_experiment_batch.py \
+   --config configs/experiment_plan.yaml \
+   --experiments seq_rnn har_baselines
+```
+
+- Each experiment block describes a `command` (usually `python -m src.models.<name>`), constant `args`, optional `horizons`, and a `grid` containing scalar, list (`kind: multi`), or boolean (`kind: flag`) parameters. The runner expands the Cartesian product of the grid (respecting any `only_when` predicates), injects `--horizons`, and prefixes the resulting CSVs using `run_prefix_template`.
+- Newly created prediction files are renamed to `experiments/preds/runs/<experiment>__<grid>.csv`, ensuring subsequent runs do not overwrite each other.
+- Immediately after each prediction export, the script launches the configured backtest command (defaults to `python -m src.backtest.run`) with the renamed file, writing results beside the other experiments and logging every artifact in `experiments/results/automation_summary.csv`.
+- Use `--dry-run` to sanity-check the generated commands before committing GPU hours, and restrict to a subset via `--experiments <name> ...` when debugging.
 
 ---
 
