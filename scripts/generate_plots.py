@@ -1,12 +1,90 @@
-#!/usr/bin/env python
-"""Generate performance plots and tables for model evaluation."""
-import matplotlib.pyplot as plt
+#!/usr/bin/env python3
 import pandas as pd
-import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from pathlib import Path
+import numpy as np
 
-OUT_DIR = Path("experiments/figures")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Set style
+sns.set_style("whitegrid")
+
+# Paths
+RESULTS_DIR = Path("experiments/results")
+FIGS_DIR = Path("experiments/figs")
+
+# 1. Forecast Metrics Plot (RMSE/QLIKE by Model/Horizon)
+summary_df = pd.read_csv(RESULTS_DIR / "summary.csv")
+# Filter to test split
+test_df = summary_df[summary_df["split"] == "test"].copy()
+test_df["horizon"] = test_df["horizon"].astype(int)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+# RMSE
+sns.barplot(data=test_df, x="horizon", y="rmse_log", hue="model", ax=axes[0])
+axes[0].set_title("RMSE (Log Volatility) by Model & Horizon (Test Split)")
+axes[0].set_ylabel("RMSE")
+axes[0].set_xlabel("Horizon (Days)")
+# QLIKE
+sns.barplot(data=test_df, x="horizon", y="qlike", hue="model", ax=axes[1])
+axes[1].set_title("QLIKE by Model & Horizon (Test Split)")
+axes[1].set_ylabel("QLIKE")
+axes[1].set_xlabel("Horizon (Days)")
+plt.tight_layout()
+plt.savefig(FIGS_DIR / "forecast_metrics.png", dpi=150)
+plt.close()
+
+# 2. Backtest KPIs Plot (Sharpe/CAGR for TFT and key models)
+# Load from tft_performance_summary.csv
+tft_df = pd.read_csv(RESULTS_DIR / "tft_performance_summary.csv")
+# Group by file (horizon)
+groups = tft_df.groupby((tft_df["Metric"] == "File").cumsum())
+sharpe_data = []
+cagr_data = []
+for name, group in groups:
+    if len(group) > 1:
+        file_row = group[group["Metric"] == "File"]
+        if not file_row.empty:
+            file_name = file_row["Value"].iloc[0]
+            horizon = file_name.split("_")[1]  # h1, h5, h22
+            sharpe_row = group[group["Metric"] == "Net Sharpe"]
+            cagr_row = group[group["Metric"] == "Net CAGR"]
+            if not sharpe_row.empty and not cagr_row.empty:
+                sharpe = float(sharpe_row["Value"].iloc[0].replace("%", ""))
+                cagr = float(cagr_row["Value"].iloc[0].replace("%", ""))
+                sharpe_data.append({"Horizon": horizon, "Sharpe": sharpe})
+                cagr_data.append({"Horizon": horizon, "CAGR": cagr})
+
+sharpe_df = pd.DataFrame(sharpe_data)
+cagr_df = pd.DataFrame(cagr_data)
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+sns.barplot(data=sharpe_df, x="Horizon", y="Sharpe", ax=axes[0])
+axes[0].set_title("TFT Net Sharpe by Horizon")
+sns.barplot(data=cagr_df, x="Horizon", y="CAGR", ax=axes[1])
+axes[1].set_title("TFT Net CAGR by Horizon")
+plt.tight_layout()
+plt.savefig(FIGS_DIR / "tft_backtest_kpis.png", dpi=150)
+plt.close()
+
+# 3. Cumulative Returns Plot (for TFT H=1, H=5, H=22)
+bt_files = ["tft_h1_bt.csv", "tft_h5_bt.csv", "tft_h22_bt.csv"]
+plt.figure(figsize=(10, 6))
+for file in bt_files:
+    df = pd.read_csv(RESULTS_DIR / file)
+    df["date"] = pd.to_datetime(df["date"])
+    horizon = file.split("_")[1]  # h1, h5, h22
+    plt.plot(df["date"], df["cum_net"], label=f"TFT H={horizon}")
+plt.title("Cumulative Net Returns: TFT by Horizon")
+plt.xlabel("Date")
+plt.ylabel("Cumulative Return")
+plt.legend()
+# Reduce x-ticks to yearly
+plt.xticks(pd.date_range(start="2020-01-01", end="2024-12-31", freq="YS"), rotation=45)
+plt.tight_layout()
+plt.savefig(FIGS_DIR / "cumulative_returns.png", dpi=150)
+plt.close()
+
+print("Plots generated in experiments/figs/: forecast_metrics.png, tft_backtest_kpis.png, cumulative_returns.png")
 
 
 def plot_nbeats_loss():
@@ -46,9 +124,9 @@ def plot_nbeats_loss():
     ax.grid(True, alpha=0.3)
     ax.set_xticks([10, 20, 30, 40, 50])
     plt.tight_layout()
-    plt.savefig(OUT_DIR / "nbeats_loss_curves.png", dpi=150)
+    plt.savefig(FIGS_DIR / "nbeats_loss_curves.png", dpi=150)
     plt.close()
-    print(f"Saved: {OUT_DIR / 'nbeats_loss_curves.png'}")
+    print(f"Saved: {FIGS_DIR / 'nbeats_loss_curves.png'}")
 
 
 def plot_performance_comparison():
@@ -105,9 +183,9 @@ def plot_performance_comparison():
                         xytext=(0, 3), textcoords="offset points", ha='center', fontsize=9)
     
     plt.tight_layout()
-    plt.savefig(OUT_DIR / "performance_comparison.png", dpi=150)
+    plt.savefig(FIGS_DIR / "performance_comparison.png", dpi=150)
     plt.close()
-    print(f"Saved: {OUT_DIR / 'performance_comparison.png'}")
+    print(f"Saved: {FIGS_DIR / 'performance_comparison.png'}")
 
 
 def create_performance_table():
@@ -136,7 +214,7 @@ def create_performance_table():
 
 
 if __name__ == "__main__":
-    print("Generating plots and tables...\n")
+    print("Generating additional plots and tables...\n")
     plot_nbeats_loss()
     plot_performance_comparison()
     create_performance_table()
