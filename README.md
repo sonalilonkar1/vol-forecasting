@@ -1,5 +1,7 @@
 # Volatility-Aware Portfolio Rebalancing
 
+**Repository:** [https://github.com/sonalilonkar1/vol-forecasting](https://github.com/sonalilonkar1/vol-forecasting)
+
 Predict future volatility, feed the signals into a cost-aware inverse-volatility allocator, and inspect the resulting portfolio diagnostics. The repo is organized around three building blocks:
 
 1. **Features** – leakage-safe HAR inputs derived from TFT-ready CSVs or the builder parquet.
